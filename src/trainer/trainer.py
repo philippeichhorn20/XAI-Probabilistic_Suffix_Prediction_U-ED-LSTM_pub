@@ -89,7 +89,7 @@ class Trainer:
         self.teacher_forcing_ratio = optimize_values["teacher_forcing_ratio"]
         print("Teacher forcing ratio: ", self.teacher_forcing_ratio)
         
-        # Events in sufffix: Dependant on data set
+        # Events in sufffix: Dependent on data set
         self.suffix_data_split_value = suffix_data_split_value
         
         # TensorBoard
@@ -253,7 +253,7 @@ class Trainer:
                 "Total Losses", 
                 {
                     'Training Total': epoch_loss_train,
-                    'Stdandard Validation Total': epoch_loss_val_std,
+                    'Standard Validation Total': epoch_loss_val_std,
                     'Uncertainty Validation Total': epoch_loss_val_unc
                     },
                 epoch+1)

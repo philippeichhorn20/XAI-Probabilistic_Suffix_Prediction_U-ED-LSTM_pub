@@ -216,7 +216,6 @@ class DropoutUncertaintyEncoderDecoderLSTM(nn.Module):
 
         # Return a list of two dicts: one for categorical and one for numerical features
         return [cat_index_dict, num_index_dict]
-            
                
     def forward(self, prefixes: List, suffixes: Optional[List]=None, teacher_forcing_ratio: Optional[float]=0.0):
         """
@@ -259,7 +258,7 @@ class DropoutUncertaintyEncoderDecoderLSTM(nn.Module):
     
         # Training
         if training:
-            # Decide for the whole batch to use teache forcing or not.
+            # Decide for the whole batch to use teacher forcing or not.
             rand_tf_value_per_batch = torch.rand(1).item()          
             for t in range(self.seq_len_pred):
                 # SOS Event
@@ -457,4 +456,3 @@ class DropoutUncertaintyEncoderDecoderLSTM(nn.Module):
         model = DropoutUncertaintyEncoderDecoderLSTM(**checkpoint['kwargs'])
         model.load_state_dict(checkpoint['model_state_dict'])
         return model
-        

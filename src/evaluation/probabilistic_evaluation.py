@@ -2,7 +2,7 @@
 SMALL DESCRIPTION
 """
 
-from evaluation.evaluation import Evaluation
+from .evaluation import Evaluation
 
 import concurrent.futures
 import random
@@ -95,6 +95,7 @@ class ProbabilisticEvaluation(Evaluation):
             if use_variance_num:
                 mean = num_means[c + '_mean']
                 std = torch.exp(0.5 * num_variances[c + '_var'])
+                
                 # Sample
                 sample = torch.normal(mean, std) 
             else:
@@ -216,8 +217,6 @@ class ProbabilisticEvaluation(Evaluation):
             for future in concurrent.futures.as_completed(futures):
                 yield future.result()
 
-    
-    
     
     def evaluate_continue_multi_processing(self, processed_prefixes, random_order=False, include_model_states=False):
         case_items = list(self.cases.items())

@@ -114,7 +114,6 @@ class Evaluation:
         for i, hl in enumerate(model.decoder.hidden_layers):
             hl.p_logit = dropout_rates[4][i]
 
-
     def _predict_suffix_with_means(self, prefix, prefix_len):
         # disable dropout
         dropout_rates = self._disable_model_dropout(self.model)
@@ -132,43 +131,7 @@ class Evaluation:
         
         while i <= max_iteration and not eos_predicted(prediction):
             cat_prediction = {k : torch.argmax(cat_pred, keepdim=True) for k, cat_pred in prediction[0][0].items()}
-            
-            """
-            # If log_normal
-            if isLogNormal:                       
-                result = dict()
-                # Categorical predictions
-                for i, k in enumerate(cat_prediction.keys()):
-                    attribute_name = k[:-5]  # clip the _mean            
-                    if cat_prediction[k].item():
-                        result[attribute_name] = self.inverted_suffix_categories[i][cat_prediction[k].item()]
-                    else:
-                        result[attribute_name] = None
                         
-                num_prediction = self._get_num_prediction_with_means(prediction[0][1], last_means)
-                
-                # Numerical predictions
-                num_prediction_vars = prediction[1][1]
-                for i, k in enumerate(num_prediction.keys()):
-                    attribute_name = k[:-5]  # clip the _mean
-                    
-                    attribute_value = num_prediction[k].item()
-                    attribute_value_logvars = num_prediction_vars[attribute_name+'_var'].item()
-                    attribute_value_vars = np.exp(attribute_value_logvars)
-                    
-                    scaler = self.dataset.encoder_decoder.continuous_encoders[attribute_name]
-                    x_stand_log = np.array([[attribute_value, attribute_value_vars]])  # shape (1, 2)
-                    x = scaler.inverse_transform(x_stand_log)
-                    result[attribute_name] = x[0]
-                    
-                readable_prediction = result
-                            
-            # If normal
-            else:
-                num_prediction = self._get_num_prediction_with_means(prediction[0][1], last_means)
-                readable_prediction = self.prediction_to_readable(cat_prediction, num_prediction)
-            """
-            
             num_prediction = self._get_num_prediction_with_means(prediction[0][1], last_means)
             
             readable_prediction = self.prediction_to_readable(cat_prediction, num_prediction)
@@ -182,7 +145,6 @@ class Evaluation:
         self._enable_dropout(self.model, dropout_rates)
         
         return suffix
-    
     
     def prediction_to_readable(self, cat_prediction, num_prediction):
         result = dict()

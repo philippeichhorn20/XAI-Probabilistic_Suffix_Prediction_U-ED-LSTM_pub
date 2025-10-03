@@ -125,7 +125,6 @@ class DropoutUncertaintyLSTMCell(nn.Module):
         OUTPUTS:
         - weight_sum: Weight regularization term
         - bias_sum: Bias regularization term
-        - dropout_reg: Dropout regularization
         """
         p = torch.tensor(self.p_logit)
         

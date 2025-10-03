@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import Dataset
 from tqdm.notebook import tqdm
 from typing import Optional
+from sklearn.base import BaseEstimator, TransformerMixin
 
 class CSV2EventLog:                               
     """
@@ -29,9 +30,8 @@ class CSV2EventLog:
                  date_format : str = '%Y-%m-%d %H:%M:%S.%f',
                  min_suffix_size : int = 1,
                  **kwargs):
-        """Creates pandas DataFrame from csv event log
-
-
+        """
+        Creates pandas DataFrame from csv event log
         Args:
             event_log_dir (str): path to the event log
             timestamp_name (str): name of the timestamp column
@@ -44,8 +44,6 @@ class CSV2EventLog:
             seconds_in_day_column (str | None, optional) : _description_. Defaults to None.
             date_format (_type_, optional): _description_. Defaults to '%Y-%m-%d %H:%M:%S.%f'.
         """
-
-
         self.case_name = case_name
         self.timestamp_name = timestamp_name
         self.time_since_case_start_column = time_since_case_start_column
@@ -55,7 +53,8 @@ class CSV2EventLog:
         self.date_format = date_format
         self.min_suffix_size = min_suffix_size
         
-        self.df = pd.read_csv(event_log_dir, date_format=date_format, parse_dates=[self.timestamp_name])
+        self.df = pd.read_csv(event_log_dir)
+        self.df[self.timestamp_name] = pd.to_datetime(self.df[self.timestamp_name], format=date_format, errors='coerce')
 
         # create new time since case started column if desired
         if self.time_since_case_start_column:
@@ -85,7 +84,6 @@ class CSV2EventLog:
             self.df[continuous_col] = self.df[continuous_col].astype('float32')
         for continuous_col in continuous_positive_columns:
             self.df[continuous_col] = self.df[continuous_col].astype('float32')
-
 
     def __create_time_since_case_start_column(self):
         case_start_times = self.df.groupby(self.case_name)[self.timestamp_name].transform('min')
@@ -167,63 +165,35 @@ class EventLogSplitter:
 
         return train_df, train_validation_df, test_validation_df
 
-
-class PositiveStandardizer_normed:
+class PositiveStandardizer_normed(BaseEstimator, TransformerMixin):
     def __init__(self):
         self.mean_ = None
         self.std_ = None
-        
-    def transform(self, x):
-        print('Positive Standardization') 
-        
-        # log the observations to assume normal PDF
-        log_x = np.log1p(x)
+
+    def fit(self, X, y=None):
+        print("Positive Standardization")
+        log_x = np.log1p(X)
         print("min,25%,50%,75%,max:", np.percentile(log_x, [0,25,50,75,100]))
-        
         # Standardize values
         self.mean_ = np.mean(log_x, axis=0)
         print("Mean: ", self.mean_)
         self.std_ = np.std(log_x, axis=0)
         print("Std: ", self.std_)
+        return self
         
+    def transform(self, X):
+        # log the observations to assume normal PDF
+        log_x = np.log1p(X)
         x_enc = (log_x - self.mean_) / self.std_ 
-        
         return x_enc
     
-    def inverse_transform(self, x_enc):
+    def inverse_transform(self, X_enc):
         # Destandardization
-        log_x = x_enc * self.std_ + self.mean_
-        
+        log_x = X_enc * self.std_ + self.mean_
         # Exponentiation:
         x = np.expm1(log_x)
-            
         return x
     
-    """
-    def inverse_transform(self, x_enc):
-        # Only for mean prediction:
-        if x_enc.shape[1] == 2:
-            mean_scaled = x_enc[:, 0]
-            var_scaled = x_enc[:, 1]
-        
-            # Mean
-            # x_destand = self.std_ * mean_scaled + self.mean_ + 0.5 * self.std_**2 * var_scaled
-            
-            # Median
-            # x_destand = self.std_ * mean_scaled + self.mean_
-            
-            # Mode:
-            x_destand = mean_scaled * self.std_ + self.mean_ - (self.std_**2) * var_scaled
-            
-            x = np.expm1(x_destand)
-            return x
-        
-        else:
-            log_x = x_enc * self.std_ + self.mean_
-            x = np.expm1(log_x)
-            return x
-    """
-
 class TensorEncoderDecoder:
     """
     Class for encoding event log data (pandas dataframe)
@@ -286,6 +256,9 @@ class TensorEncoderDecoder:
             self.continuous_imputers[continuous_positive_column] = self.__get_continuous_positive_imputer()
             self.continuous_encoders[continuous_positive_column] = self.__get_continuous_positive_encoder()
 
+    """
+    Old version:
+    
     def train_imputers_encoders(self):
         for col, categorical_encoder in self.categorical_encoders.items():
             column_data = np.array(self.event_log[[col]], dtype=object)
@@ -295,6 +268,21 @@ class TensorEncoderDecoder:
             column_data = self.event_log[[col]]
             column_data = continuous_imputer.fit_transform(column_data)
             continuous_encoder.fit(column_data)
+    """
+    
+    def train_imputers_encoders(self):
+        # categorical encoders: fit on 2D numpy arrays with dtype=object
+        for col, categorical_encoder in self.categorical_encoders.items():
+            column_data = self.event_log[[col]].astype(object).to_numpy()  # shape (n,1)
+            categorical_encoder.fit(column_data)
+
+        # continuous encoders / imputers: fit on 2D numpy arrays (n_samples, 1)
+        for col, continuous_encoder in self.continuous_encoders.items():
+            continuous_imputer = self.continuous_imputers[col]
+            column_data = self.event_log[[col]].to_numpy()  # DataFrame -> ndarray (n,1)
+            column_data = continuous_imputer.fit_transform(column_data)  # still (n,1)
+            continuous_encoder.fit(column_data)  # StandardScaler or custom transformer expects 2D
+
 
     def encode_df(self, df) -> tuple[tuple[torch.Tensor, torch.Tensor, tuple],
                                      tuple[list[tuple[str, int, dict[str : int]]]]]:
@@ -314,6 +302,41 @@ class TensorEncoderDecoder:
             all_categories[1].append((col, 1, dict()))
         return (tuple(categorical_tensors), tuple(continuous_tensors), tuple(case_ids)), tuple(all_categories)
 
+    # Corrected verison:
+    def encode_categorical_column(self, df, col, return_case_ids=False):
+        grouped = df.groupby(self.case_name)
+        windows = []
+        categories = {category: idx + 1 for idx, category in enumerate(self.categorical_encoders[col].categories_[0])}
+        
+        case_ids = []
+        for case_id, group in tqdm(grouped, desc=col, leave=False):
+            case_values = np.array(group[[col]], dtype=object)
+            case_values_enc = self.categorical_encoders[col].transform(case_values) + 1  # shape (n,1)
+            # Pad encodings - clearer prefix loop (prefix_len from min_suffix_size .. len)
+            padded_encodings = []
+            for prefix_len in range(self.min_suffix_size, len(case_values_enc) + 1):
+                padded_encodings.append(self.pad_to_window_size(case_values_enc[:prefix_len]))
+            windows.extend(padded_encodings)
+            if return_case_ids:
+                # append one case id per generated window (not per original row)
+                case_ids.extend([case_id] * len(padded_encodings))
+
+        if len(windows) == 0:
+            # avoid creating empty numpy array with ambiguous dtype
+            padded_array = np.zeros((0, self.window_size), dtype=int)
+        else:
+            padded_array = np.array(windows, dtype=int)
+        t = torch.tensor(padded_array, dtype=torch.long)
+
+        max_classes = len(self.categorical_encoders[col].categories_[0]) + 1
+        if return_case_ids:
+            return case_ids, t.squeeze(-1), categories, max_classes
+        else:
+            return t.squeeze(-1), categories, max_classes
+
+    """
+    Old version:
+    
     def encode_categorical_column(self, df, col, return_case_ids=False):
         grouped = df.groupby(self.case_name)
         windows = []
@@ -339,8 +362,12 @@ class TensorEncoderDecoder:
         if return_case_ids:
             return case_ids, t.squeeze(-1), categories, max_classes
         else:
-            return t.squeeze(-1), categories, max_classes
+            return t.squeeze(-1), categories, max_classes   
+    """
 
+    """
+    Old version:
+    
     def encode_continuous_column(self, df, col):
         grouped = df.groupby(self.case_name)
         windows = []
@@ -356,16 +383,70 @@ class TensorEncoderDecoder:
         padded_array = np.array(windows)
         t = torch.tensor(padded_array, dtype=torch.float32)
         return t.squeeze(-1)
-
+    """
+    
+    def encode_continuous_column(self, df, col):
+        grouped = df.groupby(self.case_name)
+        windows = []
+        for case_id, group in tqdm(grouped, desc=col, leave=False):
+            case_values = group[[col]].values  # shape (n,1)
+            case_values_imputed = self.continuous_imputers[col].transform(case_values)
+            case_values_enc = self.continuous_encoders[col].transform(case_values_imputed)
+            padded_encodings = []
+            for prefix_len in range(self.min_suffix_size, len(case_values_enc) + 1):
+                padded_encodings.append(self.pad_to_window_size(case_values_enc[:prefix_len]))
+            windows.extend(padded_encodings)
+        if len(windows) == 0:
+            padded_array = np.zeros((0, self.window_size), dtype=float)
+        else:
+            padded_array = np.array(windows, dtype=float)
+        t = torch.tensor(padded_array, dtype=torch.float32)
+        return t.squeeze(-1)
+    
+    """
+    Old version
+    
     def pad_to_window_size(self, previous_values):
         if len(previous_values) > self.window_size:
             return previous_values[-self.window_size:].tolist()
         else:
             return [[0.0]] * (self.window_size - len(previous_values)) \
                    + previous_values[-self.window_size:].tolist()
+    """
+    
+    def pad_to_window_size(self, previous_values):
+        """
+        previous_values: array-like with shape (k, 1)
+        returns list of shape (window_size, 1)
+        """
+        prev_list = np.asarray(previous_values).tolist()
+        if len(prev_list) > self.window_size:
+            return prev_list[-self.window_size:]
+        else:
+            pad_count = self.window_size - len(prev_list)
+            # use 0.0 for continuous; for categorical it will be cast to int later when dtype=int
+            return [[0.0]] * pad_count + prev_list
 
-    def decode_tensor(self, tensor_list):
-        pass
+    def decode_event(self, event_tuple : tuple):
+        cat, cont, case_id = event_tuple
+        decoded_event = dict()
+        for i, col in enumerate(self.categorical_columns):
+            enc_col = cat[i].unsqueeze(-1).numpy()
+            if col in self.categorical_encoders:
+                categories = self.categorical_encoders[col].categories_[0]
+                dec_col = np.array([categories[idx - 1] if idx > 0 and idx <= len(categories) else np.nan for idx in enc_col.flatten()])
+            else:
+                dec_col = enc_col
+            decoded_event[col] = dec_col.tolist()
+        for i, col in enumerate(self.continuous_columns + self.continuous_positive_columns):
+            enc_col = cont[i].unsqueeze(-1).numpy()
+            if col in self.continuous_encoders:
+                dec_col = self.continuous_encoders[col].inverse_transform(enc_col)
+            else:
+                dec_col = enc_col
+            decoded_event[col] = dec_col.flatten().tolist()
+        decoded_event[self.case_name] = [case_id] * len(decoded_event[self.categorical_columns[0]])
+        return pd.DataFrame(decoded_event)
     
     def __get_continuous_imputer(self):
         return SimpleImputer(strategy='mean')
@@ -383,9 +464,7 @@ class TensorEncoderDecoder:
     
     def __get_continuous_positive_encoder(self):
         standardizer = PositiveStandardizer_normed()
-        return sklearn.preprocessing.FunctionTransformer(standardizer.transform,
-                                                         inverse_func=standardizer.inverse_transform,
-                                                         validate=True)
+        return standardizer
 
 
 class EventLogLoader:

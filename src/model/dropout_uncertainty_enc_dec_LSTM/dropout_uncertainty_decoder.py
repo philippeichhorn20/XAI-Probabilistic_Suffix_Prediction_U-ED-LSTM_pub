@@ -37,6 +37,7 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
 
         # Create a first cell:
         self.first_layer = DropoutUncertaintyLSTMCell(input_size=input_size, hidden_size=hidden_size, dropout=dropout)
+        
         # Create multiple LSTM cells based on num_layer
         self.hidden_layers = nn.ModuleList([DropoutUncertaintyLSTMCell(input_size=hidden_size, hidden_size=hidden_size, dropout=dropout) for i in range(num_layers-1)])
         
@@ -74,6 +75,44 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
             total_bias_reg += bias
             
         return total_weight_reg, total_bias_reg
+    
+    def __data_enc_for_model(self, data, pred):
+        """
+        Transform the dataloader input (prefix or suffix input) into a tensor structure for the encoder.
+        
+        INPUSTS:
+        - data: previsous event data (either the last target or predicted).
+        - pred: Boolean: true if predicted.
+        
+        OUTPUTS:
+        - prefixes: Returns model input: Tensor seq_len x batch_size x input features (also embedded)
+        """
+        if pred:
+            cats, nums = data
+        else:
+            cats = [data[0][i] for i in self.data_indices_dec[0]] # dims: list (n categorical values): Each with Tensor: batch_size x (window_size - suffix size)
+            nums = [data[1][i] for i in self.data_indices_dec[1]] # dims: list (n numerical values): Each with Tensor: batch_size x (window_size - suffix size)
+        
+            assert len(cats) == len(self.data_indices_dec[0]) and len(nums) == len(self.data_indices_dec[1]), \
+                f"Decoder: Number of input tensor is unequal the number of indices"
+        
+        # Embedd categorical tensors
+        embedded_cats = []
+        for i, embedd in enumerate(self.embeddings):        
+            embedded_cats.append(embedd(cats[i]))
+
+        # Merged categroical data
+        merged_cats = torch.cat([cat for cat in embedded_cats], dim=-1)
+        
+        if len(nums):
+            # Merged numerical inputs
+            merged_nums = torch.cat([num.unsqueeze(2) for num in nums], dim=-1)
+        else:
+            merged_nums = torch.tensor([], device=merged_cats.device)
+        
+        # Merged input
+        next_event = torch.cat((merged_cats, merged_nums), dim=-1).permute(1,0,2) # dim: seq_len x batch_size x input_features
+        return next_event
 
     def forward(self, 
                 input: Tensor,
@@ -150,43 +189,3 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
 
         # Return the prediction dictionaries for means and variances along with the hidden states
         return predictions, (h, c), z
-    
-    def __data_enc_for_model(self,
-                             data,
-                             pred):
-        """
-        Transform the dataloader input (prefix or suffix input) into a tensor structure for the encoder.
-        
-        INPUSTS:
-        - data: previsous event data (either the last target or predicted).
-        - pred: Boolean: true if predicted.
-        
-        OUTPUTS:
-        - prefixes: Returns model input: Tensor seq_len x batch_size x input features (also embedded)
-        """
-        if pred:
-            cats, nums = data
-        else:
-            cats = [data[0][i] for i in self.data_indices_dec[0]] # dims: list (n categorical values): Each with Tensor: batch_size x (window_size - suffix size)
-            nums = [data[1][i] for i in self.data_indices_dec[1]] # dims: list (n numerical values): Each with Tensor: batch_size x (window_size - suffix size)
-        
-            assert len(cats) == len(self.data_indices_dec[0]) and len(nums) == len(self.data_indices_dec[1]), \
-                f"Decoder: Number of input tensor is unequal the number of indices"
-        
-        # Embedd categorical tensors
-        embedded_cats = []
-        for i, embedd in enumerate(self.embeddings):        
-            embedded_cats.append(embedd(cats[i]))
-
-        # Merged categroical data
-        merged_cats = torch.cat([cat for cat in embedded_cats], dim=-1)
-        
-        if len(nums):
-            # Merged numerical inputs
-            merged_nums = torch.cat([num.unsqueeze(2) for num in nums], dim=-1)
-        else:
-            merged_nums = torch.tensor([], device=merged_cats.device)
-        
-        # Merged input
-        next_event = torch.cat((merged_cats, merged_nums), dim=-1).permute(1,0,2) # dim: seq_len x batch_size x input_features
-        return next_event
