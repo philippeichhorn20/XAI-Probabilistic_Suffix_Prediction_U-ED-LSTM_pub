@@ -158,6 +158,7 @@ class ProbabilisticEvaluation(Evaluation):
     
     
     def _evaluate_single(self, case_name, prefix_len, prefix, suffix, include_model_states):
+        
         readable_prefix = self.case_to_readable(prefix, prune_eos=False)
         # print("Prefix: ", readable_prefix)
         

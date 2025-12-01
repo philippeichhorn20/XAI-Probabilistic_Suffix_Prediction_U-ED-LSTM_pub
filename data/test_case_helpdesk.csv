@@ -1,0 +1,4 @@
+Case ID,Activity,Resource,Complete Timestamp,Variant,Variant index,Variant,seriousness,customer,product,responsible_section,seriousness_2,service_level,service_type,support_section,workgroup
+Case 1,Assign seriousness,Value 1,2012/10/09 14:50:17.000,Variant 12,12,Variant 12,Value 1,Value 1,Value 1,Value 1,Value 1,Value 1,Value 1,Value 1,Value 1
+Case 1,Take in charge ticket,Value 1,2012/10/09 14:51:01.000,Variant 12,12,Variant 12,Value 1,Value 1,Value 1,Value 1,Value 1,Value 1,Value 1,Value 1,Value 1
+Case 1,Take in charge ticket,Value 2,2012/10/12 15:02:56.000,Variant 12,12,Variant 12,Value 1,Value 1,Value 1,Value 1,Value 1,Value 2,Value 1,Value 1,Value 1

@@ -237,7 +237,7 @@ class DropoutUncertaintyEncoderDecoderLSTM(nn.Module):
         # Model is in training mode and suffixes are provided
         training = self.training and suffixes is not None
         # Model is in evaluation (validation) mode and suffixes are provided
-        validation = not self.training and suffixes is not None              
+        validation = not self.training            
         
         # Call encoder
         (h_enc, c_enc) = self.encoder(input=prefixes)

@@ -175,7 +175,7 @@ class Trainer:
             # Starts near 1, smoothly decays to near 0
             # self.teacher_forcing_ratio = 1 / (1 + np.exp((epoch - midpoint) / scale))
 
-            # Bacth Loop
+            # Batch Loop
             for i, train_data in enumerate(train_dataloader): 
                 cats, nums, _ = train_data
                             
