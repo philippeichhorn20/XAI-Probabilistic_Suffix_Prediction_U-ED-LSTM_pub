@@ -8,6 +8,8 @@ class Minimal_Levenshtein_Neighborhood(Perturbations):
     """
     This method samples perturbations from the list_of_traces and
     returns n-traces that have the smallest levenstein distance from the original
+
+    - idea taken from LORELEY
     """
 
     def __init__(self, list_of_traces:list[Trace]):
