@@ -5,6 +5,7 @@ SMALL DESCRIPTION
 import torch
 from collections.abc import Iterator
 from sklearn.preprocessing import StandardScaler
+from typing import Optional, Tuple, List
 
 
 class Evaluation:
@@ -117,10 +118,8 @@ class Evaluation:
                 )
             else:
                 result[c + "_mean"] = pred_mean[c + "_mean"]
-
         return result
 
-    # NEW: Ncessary?
     def _get_num_prediction_with_vars(self, pred_vars):
         result = {}
         for c in self.all_num_attributes:

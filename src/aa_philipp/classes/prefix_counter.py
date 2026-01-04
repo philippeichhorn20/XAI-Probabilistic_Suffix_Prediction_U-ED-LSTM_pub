@@ -20,9 +20,7 @@ class PrefixCounter:
         Count how many traces start with the given prefix.
         """
         # Convert Sequence into a list of activity strings
-
         prefix_list = [event.activity for event in prefix]
-
 
         plen = len(prefix_list)
 

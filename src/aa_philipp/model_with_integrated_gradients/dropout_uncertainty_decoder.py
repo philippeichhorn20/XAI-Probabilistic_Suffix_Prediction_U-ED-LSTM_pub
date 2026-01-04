@@ -76,11 +76,11 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
             
         return total_weight_reg, total_bias_reg
     
-    def __data_enc_for_model(self, data, pred):
+    def data_enc_for_model(self, data, pred):
         """
         Transform the dataloader input (prefix or suffix input) into a tensor structure for the encoder.
         
-        INPUSTS:
+        INPUTS:
         - data: previsous event data (either the last target or predicted).
         - pred: Boolean: true if predicted.
         
@@ -113,6 +113,7 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
         # Merged input
         next_event = torch.cat((merged_cats, merged_nums), dim=-1).permute(1,0,2) # dim: seq_len x batch_size x input_features
         return next_event
+    
 
     def forward(self, 
                 input: Tensor,
