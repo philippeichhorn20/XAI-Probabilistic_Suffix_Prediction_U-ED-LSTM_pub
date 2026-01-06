@@ -135,6 +135,7 @@ class ProbabilisticEvaluation(Evaluation):
 
     def sample_suffix(self, prefix, prefix_len, include_model_states):
         prediction, (h, c), z = self.model.inference(prefix=prefix)
+
         suffix = []
         max_iteration = (
             self.dataset.encoder_decoder.window_size

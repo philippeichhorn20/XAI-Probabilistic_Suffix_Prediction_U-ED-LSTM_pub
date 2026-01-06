@@ -81,9 +81,8 @@ class DropoutUncertaintyLSTMEncoder(nn.Module):
         """
 
         # Transform the input into
-        prefixes = self.__data_enc_for_model(
-            data=input
-        )  # dim: Tensor: seq_len x batch_size x input feature (cat as embedding)
+        prefixes = self.__data_enc_for_model(data=input)  
+        # dim: Tensor: seq_len x batch_size x input feature (cat as embedding)
 
         # Outputs: All hidden states of all cells in the layer, h,c: last hidden state and cell state in the layer
         outputs, (h, c), _ = self.first_layer(input=prefixes, hx=None, z=None)
@@ -111,11 +110,16 @@ class DropoutUncertaintyLSTMEncoder(nn.Module):
             data[1][i] for i in self.data_indices_enc[1]
         ]  # dims: list (n numerical values): Each with Tensor: batch_size x (window_size - suffix size)
 
+        
         assert len(cats) == len(self.data_indices_enc[0]) and len(nums) == len(
             self.data_indices_enc[1]
         ), f"Encoder: Number of input tensor is unequal the number of indices"
 
+
+        print("encoder after i donno but before embedding", (cats, nums))
         # Embedd categorical tensors
+
+        
         embedded_cats = []
         for i, embedd in enumerate(self.embeddings):
             embedded_cats.append(embedd(cats[i]))
@@ -123,11 +127,15 @@ class DropoutUncertaintyLSTMEncoder(nn.Module):
         # Merged categroical data
         merged_cats = torch.cat([cat for cat in embedded_cats], dim=-1)
 
+
         if len(nums):
             # Merged numerical inputs
             merged_nums = torch.cat([num.unsqueeze(2) for num in nums], dim=-1)
         else:
             merged_nums = torch.tensor([], device=merged_cats.device)
+
+        print("encoder after embedding", ( merged_cats, merged_nums))
+
         prefixes = torch.cat((merged_cats, merged_nums), dim=-1).permute(
             1, 0, 2
         )  # dim: seq_len x batch_size x input_features
