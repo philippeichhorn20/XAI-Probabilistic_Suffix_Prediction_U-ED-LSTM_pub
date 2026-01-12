@@ -38,7 +38,8 @@ class Evaluation:
 
         self.growing_num_values = growing_num_values
 
-        self.prefix_cat_attributes = self.model.enc_feat[0]
+        self.prefix_cat_attributes = self.model.enc_feat[0]        
+        
         self.prefix_num_attributes = self.model.enc_feat[1]
         prefix_categories = [
             cat_tuple
@@ -159,7 +160,6 @@ class Evaluation:
 
         # Prediction by model
         prediction, (h, c), z = self.model.inference(prefix=prefix)
-
         suffix = []
         max_iteration = (
             self.dataset.encoder_decoder.window_size
@@ -257,10 +257,13 @@ class Evaluation:
             # attribute_name = self.dataset.all_categories[0][j][0]
             attribute_name = self.prefix_cat_attributes[j]
             value = case[0][j][0, i].item()
-
-            result[attribute_name] = (
-                self.inverted_prefix_categories[j][value] if value else None
-            )
+            
+            if (len(self.inverted_prefix_categories[j]) <= value):
+                result[attribute_name] = None
+            else:
+                result[attribute_name] = (
+                    self.inverted_prefix_categories[j][value] if value else None
+                )
 
         # decode numerical attributes
         for j in range(len(case[1])):

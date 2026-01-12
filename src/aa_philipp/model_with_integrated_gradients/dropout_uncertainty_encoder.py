@@ -115,8 +115,6 @@ class DropoutUncertaintyLSTMEncoder(nn.Module):
             self.data_indices_enc[1]
         ), f"Encoder: Number of input tensor is unequal the number of indices"
 
-
-        print("encoder after i donno but before embedding", (cats, nums))
         # Embedd categorical tensors
 
         
@@ -134,7 +132,6 @@ class DropoutUncertaintyLSTMEncoder(nn.Module):
         else:
             merged_nums = torch.tensor([], device=merged_cats.device)
 
-        print("encoder after embedding", ( merged_cats, merged_nums))
 
         prefixes = torch.cat((merged_cats, merged_nums), dim=-1).permute(
             1, 0, 2

@@ -142,6 +142,7 @@ class ProbabilisticEvaluation(Evaluation):
             - self.dataset.encoder_decoder.min_suffix_size
             - prefix_len
         )
+
         last_means = {
             a + "_mean": prefix[1][self.all_num_attributes.index(a)][:, -1].unsqueeze(1)
             for a in self.growing_num_values

@@ -97,7 +97,6 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
                 f"Decoder: Number of input tensor is unequal the number of indices"
             
 
-        print("decoder after i donno but before embedding", (cats, nums))
 
         # Embedd categorical tensors
         embedded_cats = []
@@ -113,13 +112,9 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
         else:
             merged_nums = torch.tensor([], device=merged_cats.device)
 
-
-        print("decoder after embedding", (merged_cats, merged_nums))
-
         # Merged input
         next_event = torch.cat((merged_cats, merged_nums), dim=-1).permute(1,0,2) # dim: seq_len x batch_size x input_features
         return next_event
-    
 
     def forward(self, 
                 input: Tensor,

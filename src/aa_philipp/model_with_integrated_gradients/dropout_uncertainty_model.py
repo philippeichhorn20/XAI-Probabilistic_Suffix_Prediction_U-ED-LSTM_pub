@@ -24,7 +24,10 @@ class DropoutUncertaintyEncoderDecoderLSTM(nn.Module):
         hidden_size: int,
         num_layers: int,
         dropout: Optional[float] = None,
-    ):
+
+        static_data_set_categories: Optional[list[tuple[str, dict[str, int]]]]=None,
+        static_enc_feat: Optional[list]=None):
+
         """
         Full Encoder-Decoder architecture with droput uncertainty LSTM
 
