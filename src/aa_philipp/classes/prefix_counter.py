@@ -1,5 +1,5 @@
 import pandas as pd
-from classes.sequence import Sequence
+from .sequence import Sequence
 
 class PrefixCounter:
     dataset: pd.DataFrame

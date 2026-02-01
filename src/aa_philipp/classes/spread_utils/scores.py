@@ -1,4 +1,4 @@
-from classes.sequence import Sequence
+from ..sequence import Sequence
 
 import networkx as nx
 

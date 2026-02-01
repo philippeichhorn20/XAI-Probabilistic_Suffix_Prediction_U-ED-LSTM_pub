@@ -3,11 +3,10 @@ import collections
 import networkx as nx
 import numpy as np
 
-from classes.sequence import Sequence
-from classes.event import Event
+from .sequence import Sequence
+from .event import Event
 
-
-import classes.spread_utils.scores as Scores
+from .spread_utils import scores as Scores
 
 class SuffixSamples:
     """

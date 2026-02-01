@@ -17,6 +17,8 @@ tensorboard = "*"
 standard-imghdr = "*"
 pyxdameraulevenshtein = "*"
 crps = "*"
+streamlit = "*"
+plotly = "*"
 
 [dev-packages]
 torch-tb-profiler = "*"

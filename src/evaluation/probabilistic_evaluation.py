@@ -254,7 +254,7 @@ class ProbabilisticEvaluation(Evaluation):
             ):
                 yield case_name, prefix_len, None, None, None, None
 
-    def evaluate(self, random_order=False, include_model_states=False):
+    def evaluate(self, random_order=False, include_model_states=False, include_database_index = False):
         # compiled_evaluate_single = torch.compile(self._evaluate_single)
         case_items = list(self.cases.items())
         if random_order:
@@ -265,9 +265,13 @@ class ProbabilisticEvaluation(Evaluation):
             for j, (prefix_len, prefix, suffix) in enumerate(
                 self._iterate_case(full_case)
             ):
-                yield self._evaluate_single(
+                result = self._evaluate_single(
                     case_name, prefix_len, prefix, suffix, include_model_states
                 )
+                if include_database_index:
+                    yield result + (i,)
+                else: 
+                    yield result
 
     def evaluate_multi_processing(self, random_order=False, include_model_states=False):
         case_items = list(self.cases.items())

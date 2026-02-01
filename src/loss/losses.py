@@ -137,20 +137,20 @@ class Loss:
     def loss_attenuation_cross_entropy(self, pred_logits, pred_logvars, T, targets):
         """
         Loss attenuation cross entropy: Combined Epistemic and Aleatoric Uncertainty.
-          
+
         INPUTS:
         - pred_logits: Predicted logit values for N events: dim: seq_len x batch x classes
         - pred_logvars: Predicted log variances per logit value for N events: dim: seq len x batch x classes
         - T: T gaussian distributed random epsilon value generations.
         - targets: Target class indices for N events: dim: batch x  seq len
-        
+
         OUTPUTS:
         - L: Global Loss value for numerical values of events of different batches: Tensor (float)
         """
-            
+
         # Cross Entropy Loss
         CEL = torch.nn.CrossEntropyLoss(reduction='none')
-        
+
         # Get standard deviation
         variance = torch.exp(pred_logvars)
         std = torch.sqrt(variance)

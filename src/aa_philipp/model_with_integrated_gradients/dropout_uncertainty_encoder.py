@@ -81,7 +81,7 @@ class DropoutUncertaintyLSTMEncoder(nn.Module):
         """
 
         # Transform the input into
-        prefixes = self.__data_enc_for_model(data=input)  
+        prefixes = self.data_enc_for_model(data=input)
         # dim: Tensor: seq_len x batch_size x input feature (cat as embedding)
 
         # Outputs: All hidden states of all cells in the layer, h,c: last hidden state and cell state in the layer

@@ -136,7 +136,7 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
         prediction_vars = [{}, {}]   # List of two dicts: [cat_pred_vars, num_pred_vars]
 
         # Process the input event through the encoder
-        event = self.__data_enc_for_model(data=input, pred=pred)  # dim: Tensor: seq_len x batch_size x input feature
+        event = self.data_enc_for_model(data=input, pred=pred)  # dim: Tensor: seq_len x batch_size x input feature
 
         # first decoder call initialize sample mask
         if z is None:
@@ -159,6 +159,9 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
             
         # Get the last output (outputs[-1]) for predictions
         final_output = outputs[-1]
+
+        print("final_output: ", final_output)
+
 
         # Unpack output_sizes into categorical and numerical dicts
         cat_output_sizes, num_output_sizes = self.output_sizes
@@ -188,6 +191,7 @@ class DropoutUncertaintyLSTMDecoder(nn.Module):
             # prediction_vars[1][f"{key}_var"] = bounded_logvar  # Store the safe version
             
         predictions = [prediction_means, prediction_vars]
+        
 
         # Return the prediction dictionaries for means and variances along with the hidden states
         return predictions, (h, c), z

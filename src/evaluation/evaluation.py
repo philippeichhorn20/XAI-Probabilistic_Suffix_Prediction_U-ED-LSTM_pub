@@ -160,6 +160,9 @@ class Evaluation:
 
         # Prediction by model
         prediction, (h, c), z = self.model.inference(prefix=prefix)
+
+        
+
         suffix = []
         max_iteration = (
             self.dataset.encoder_decoder.window_size
@@ -257,13 +260,15 @@ class Evaluation:
             # attribute_name = self.dataset.all_categories[0][j][0]
             attribute_name = self.prefix_cat_attributes[j]
             value = case[0][j][0, i].item()
-            
-            if (len(self.inverted_prefix_categories[j]) <= value):
+
+            if value == 0:
+                # Index 0 is padding
+                result[attribute_name] = None
+            elif value not in self.inverted_prefix_categories[j]:
+                # Unknown index
                 result[attribute_name] = None
             else:
-                result[attribute_name] = (
-                    self.inverted_prefix_categories[j][value] if value else None
-                )
+                result[attribute_name] = self.inverted_prefix_categories[j][value]
 
         # decode numerical attributes
         for j in range(len(case[1])):

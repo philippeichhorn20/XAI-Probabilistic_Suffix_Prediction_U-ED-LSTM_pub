@@ -2,7 +2,7 @@ import math
 import collections
 import networkx as nx
 
-from classes.event import Event, HelpdeskEvent
+from .event import Event, HelpdeskEvent
 
 class Sequence:
     def __init__(self, event_list: list[Event]):
