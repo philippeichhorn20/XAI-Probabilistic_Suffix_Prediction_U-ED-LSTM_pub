@@ -42,19 +42,28 @@ Configuration:
         from src.interpretability.config.bpic2012_config import CONFIG
 """
 
-from .integrated_gradients import IntegratedGradients
-from .target_selectors import (
+from .attribution.integrated_gradients import IntegratedGradients
+from .model.target_selectors import (
     TargetSelector,
     CategoricalTargetSelector,
     NumericalTargetSelector,
     create_target_selector
 )
-from .baselines import BaselineGenerator, ZeroBaseline, PaddingBaseline, MeanBaseline
-from .model_wrapper import IGModelWrapper
-from .visualization import AttributionVisualizer
+from .model.baselines import BaselineGenerator, ZeroBaseline, PaddingBaseline, MeanBaseline
+from .model.model_wrapper import IGModelWrapper
+from .visualization.attribution_vis import AttributionVisualizer
 from .interpretability_tool import InterpretabilityTool, AttributionMap
-from .shap_explainer import SequenceSHAP
-from .ice_explainer import SequenceICE
+from .attribution.shap_explainer import SequenceSHAP
+from .attribution.ice_explainer import SequenceICE
+from .utils.sequence_utils import (
+    SequenceFormatter,
+    SequenceChange,
+    format_sequence,
+    format_comparison,
+    print_sequence,
+    print_comparison
+)
+from .utils.tensor_decoder import TensorDecoder
 
 __all__ = [
     'InterpretabilityTool',
@@ -71,5 +80,14 @@ __all__ = [
     'PaddingBaseline',
     'MeanBaseline',
     'IGModelWrapper',
-    'AttributionVisualizer'
+    'AttributionVisualizer',
+    # Sequence utilities
+    'SequenceFormatter',
+    'SequenceChange',
+    'format_sequence',
+    'format_comparison',
+    'print_sequence',
+    'print_comparison',
+    # Tensor decoding
+    'TensorDecoder',
 ]

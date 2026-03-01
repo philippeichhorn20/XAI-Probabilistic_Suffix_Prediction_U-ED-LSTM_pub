@@ -31,7 +31,13 @@ class PredictionResult:
 
 
 class PredictionEngine:
-    """Handles model inference for suffix prediction."""
+    """Handles model inference for suffix prediction.
+
+    Uses model.inference() to match the evaluation pipeline exactly:
+    - Prefix tensors are left-padded with zeros to window_size
+    - First decoder call uses pred=False (SOS event from prefix)
+    - Subsequent decoder calls use pred=True (predicted events)
+    """
 
     def __init__(
         self,
@@ -41,6 +47,7 @@ class PredictionEngine:
         activity_feature: str,
         idx_to_activity: Dict[int, str],
         activity_to_idx: Dict[str, int],
+        window_size: int,
         device: str = 'cpu'
     ):
         self.model = model
@@ -49,6 +56,7 @@ class PredictionEngine:
         self.activity_feature = activity_feature
         self.idx_to_activity = idx_to_activity
         self.activity_to_idx = activity_to_idx
+        self.window_size = window_size
         self.device = torch.device(device)
         self.model = self.model.to(self.device)
 
@@ -58,9 +66,23 @@ class PredictionEngine:
         # Create case editor
         self.case_editor = CaseEditor(cat_feature_names, num_feature_names)
 
-        # Get decoder feature names from model
-        self.dec_cat_names = list(model.dec_feat[0])
-        self.dec_num_names = list(model.dec_feat[1])
+    def _left_pad_tensors(
+        self,
+        tensors: List[torch.Tensor],
+        dtype: torch.dtype,
+    ) -> List[torch.Tensor]:
+        """Left-pad a list of 1D tensors to window_size with zeros, adding batch dim.
+
+        Input tensors have shape (seq_len,).
+        Output tensors have shape (1, window_size).
+        """
+        padded = []
+        for t in tensors:
+            p = torch.zeros(1, self.window_size, dtype=dtype, device=self.device)
+            seq_len = t.shape[0]
+            p[0, -seq_len:] = t.to(self.device)
+            padded.append(p)
+        return padded
 
     def predict_suffix(
         self,
@@ -72,8 +94,12 @@ class PredictionEngine:
         """
         Predict suffix given a prefix.
 
+        Uses model.inference() which correctly handles the encoder-decoder
+        handoff (SOS event with pred=False for the first step).
+
         Args:
-            prefix: Tuple of (categorical_tensors, numerical_tensors)
+            prefix: Tuple of (categorical_tensors, numerical_tensors),
+                    each tensor has shape (prefix_length,) without batch dim.
             max_suffix_length: Maximum length of predicted suffix
             top_k: Number of top predictions to return per step
             actual_suffix: Ground truth suffix if available
@@ -84,76 +110,27 @@ class PredictionEngine:
         self.model.eval()
 
         with torch.no_grad():
-            # Prepare prefix tensors - add batch dimension
-            cat_tensors = [t.unsqueeze(0).to(self.device) for t in prefix[0]]
-            num_tensors = [t.unsqueeze(0).to(self.device) for t in prefix[1]]
+            # Left-pad prefix tensors to window_size (matching training format)
+            padded_cat = self._left_pad_tensors(prefix[0], dtype=torch.long)
+            padded_num = self._left_pad_tensors(prefix[1], dtype=torch.float32)
+            padded_prefix = [padded_cat, padded_num]
 
-            # Get encoder output - encoder expects [cat_tensors, num_tensors] as single list
-            encoder_output = self.model.encoder([cat_tensors, num_tensors])
-            # encoder_output is (h, c) tuple
+            # First prediction: model.inference handles encoder + SOS + first decoder call
+            prediction, (h, c), z = self.model.inference(prefix=padded_prefix)
 
-            # Initialize decoder input with last event from prefix
-            batch_size = 1
-
-            # Create initial decoder input from last prefix event
-            dec_cat_inputs = []
-            for name in self.dec_cat_names:
-                # Find this feature in the prefix
-                if name in self.cat_feature_names:
-                    feat_idx = self.cat_feature_names.index(name)
-                    if feat_idx < len(cat_tensors):
-                        # Use last value from prefix
-                        last_val = cat_tensors[feat_idx][:, -1:].clone()  # [batch, 1]
-                    else:
-                        last_val = torch.zeros(batch_size, 1, dtype=torch.long, device=self.device)
-                else:
-                    last_val = torch.zeros(batch_size, 1, dtype=torch.long, device=self.device)
-                dec_cat_inputs.append(last_val)
-
-            dec_num_inputs = []
-            for name in self.dec_num_names:
-                if name in self.num_feature_names:
-                    feat_idx = self.num_feature_names.index(name)
-                    if feat_idx < len(num_tensors):
-                        last_val = num_tensors[feat_idx][:, -1:].clone()  # [batch, 1]
-                    else:
-                        last_val = torch.zeros(batch_size, 1, device=self.device)
-                else:
-                    last_val = torch.zeros(batch_size, 1, device=self.device)
-                dec_num_inputs.append(last_val)
-
-            # Autoregressive decoding
             predicted_indices = []
             all_probabilities = []
             all_top_k = []
 
-            hx = encoder_output  # (h, c) from encoder
-            z = None  # Dropout mask, None for first call
-
             for step in range(max_suffix_length):
-                # Decoder forward pass
-                # decoder expects: input=(cats, nums), hx=(h,c), z=None, pred=True
-                predictions, hx, z = self.model.decoder(
-                    input=(dec_cat_inputs, dec_num_inputs),
-                    hx=hx,
-                    z=z,
-                    pred=True
-                )
-
-                # predictions = [[cat_means, num_means], [cat_vars, num_vars]]
-                # cat_means is a dict like {"Activity_mean": logits_tensor, "Resource_mean": ...}
-                cat_means = predictions[0][0]
-                num_means = predictions[0][1]
+                # prediction[0][0] = dict of categorical logits {name_mean: tensor}
+                # prediction[0][1] = dict of numerical predictions {name_mean: tensor}
+                cat_means = prediction[0][0]
+                num_means = prediction[0][1]
 
                 # Get activity logits
                 activity_key = f"{self.activity_feature}_mean"
-                if activity_key not in cat_means:
-                    # Try without _mean suffix
-                    activity_key = self.activity_feature + "_mean"
-
-                activity_logits = cat_means[activity_key]  # [batch, num_activities]
-                activity_logits = activity_logits.squeeze(0)  # [num_activities]
-
+                activity_logits = cat_means[activity_key].squeeze(0)  # [num_classes]
                 probs = F.softmax(activity_logits, dim=-1)
 
                 # Get predicted activity
@@ -179,29 +156,25 @@ class PredictionEngine:
                 if self.eos_idx is not None and pred_idx == self.eos_idx:
                     break
 
-                # Prepare next decoder input using predictions
-                dec_cat_inputs = []
-                for name in self.dec_cat_names:
-                    key = f"{name}_mean"
-                    if key in cat_means:
-                        logits = cat_means[key].squeeze(0)  # [num_classes]
-                        pred_val = logits.argmax().item()
-                        next_input = torch.tensor([[pred_val]], dtype=torch.long, device=self.device)
-                    else:
-                        next_input = torch.zeros(batch_size, 1, dtype=torch.long, device=self.device)
-                    dec_cat_inputs.append(next_input)
+                # Create last_event from prediction for next decoder step
+                # (matches evaluation.py's pattern exactly)
+                cat_prediction = {
+                    k: torch.argmax(v, keepdim=True)
+                    for k, v in cat_means.items()
+                }
+                num_prediction = {k: v for k, v in num_means.items()}
 
-                dec_num_inputs = []
-                for name in self.dec_num_names:
-                    key = f"{name}_mean"
-                    if key in num_means:
-                        pred_val = num_means[key].squeeze(0)  # scalar or [1]
-                        if pred_val.dim() == 0:
-                            pred_val = pred_val.unsqueeze(0)
-                        next_input = pred_val.unsqueeze(0)  # [batch, 1]
-                    else:
-                        next_input = torch.zeros(batch_size, 1, device=self.device)
-                    dec_num_inputs.append(next_input)
+                last_event = (
+                    list(cat_prediction.values()),
+                    list(num_prediction.values()),
+                )
+
+                # Subsequent predictions use model.inference with last_event
+                prediction, (h, c) = self.model.inference(
+                    last_event=last_event,
+                    hx=(h, c),
+                    z=z,
+                )
 
         # Convert indices to activity names
         predicted_activities = [

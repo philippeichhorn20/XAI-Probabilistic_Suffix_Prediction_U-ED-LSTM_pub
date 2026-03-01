@@ -148,6 +148,11 @@ class ModelManager:
 
         raise ValueError(f"Activity feature '{config.concept_name}' not found")
 
+    def get_window_size(self, model_name: str) -> int:
+        """Get the window size (padded sequence length) for the model's dataset."""
+        dataset = self.load_test_dataset(model_name)
+        return dataset.encoder_decoder.window_size
+
     def get_case_length(self, model_name: str, case_name: str) -> int:
         """Get the length of a case (number of events)."""
         case_data = self.get_case_data(model_name, case_name)

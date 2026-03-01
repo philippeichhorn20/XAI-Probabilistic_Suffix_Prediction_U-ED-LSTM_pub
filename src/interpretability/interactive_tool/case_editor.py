@@ -1,7 +1,7 @@
 """Case editing utilities for manipulating process cases."""
 
 import torch
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any, Set, Tuple, Optional
 from dataclasses import dataclass, field
 from copy import deepcopy
 
@@ -165,3 +165,51 @@ class CaseEditor:
             act_name = idx_to_activity.get(act_idx, f"Unknown_{act_idx}")
             activities.append(act_name)
         return activities
+
+
+def detect_constant_features(case: EditableCase) -> Tuple[Set[str], Set[str]]:
+    """Detect features that have the same value across all events in the case.
+
+    Returns:
+        (constant_cat, constant_num): Sets of feature names that are constant
+    """
+    if not case.events:
+        return set(), set()
+
+    constant_cat: Set[str] = set()
+    constant_num: Set[str] = set()
+
+    for feat_name in case.cat_feature_names:
+        values = [e.categorical.get(feat_name) for e in case.events]
+        if len(set(values)) == 1:
+            constant_cat.add(feat_name)
+
+    for feat_name in case.num_feature_names:
+        values = [e.numerical.get(feat_name, 0.0) for e in case.events]
+        if values and max(values) - min(values) < 1e-6:
+            constant_num.add(feat_name)
+
+    return constant_cat, constant_num
+
+
+def get_case_level_features(model_name: str, case: EditableCase) -> Tuple[Set[str], Set[str]]:
+    """Get case-level (constant) features, either from config or auto-detected.
+
+    Returns:
+        (case_level_cat, case_level_num): Sets of feature names
+    """
+    from .config import get_model_config
+
+    config = get_model_config(model_name)
+
+    if config.case_level_cat is not None:
+        case_level_cat = set(config.case_level_cat)
+    else:
+        case_level_cat, _ = detect_constant_features(case)
+
+    if config.case_level_num is not None:
+        case_level_num = set(config.case_level_num)
+    else:
+        _, case_level_num = detect_constant_features(case)
+
+    return case_level_cat, case_level_num

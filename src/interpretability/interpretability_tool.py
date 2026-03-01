@@ -35,18 +35,18 @@ from typing import Dict, List, Optional, Tuple, Union
 import warnings
 import numpy as np
 
-from .integrated_gradients import IntegratedGradients
-from .target_selectors import (
+from .attribution.integrated_gradients import IntegratedGradients
+from .model.target_selectors import (
     TargetSelector,
     CategoricalTargetSelector,
     NumericalTargetSelector,
     create_target_selector
 )
-from .baselines import BaselineGenerator, ZeroBaseline, create_baseline_generator
-from .model_wrapper import IGModelWrapper
-from .visualization import AttributionVisualizer
-from .shap_explainer import SequenceSHAP
-from .ice_explainer import SequenceICE
+from .model.baselines import BaselineGenerator, ZeroBaseline, create_baseline_generator
+from .model.model_wrapper import IGModelWrapper
+from .visualization.attribution_vis import AttributionVisualizer
+from .attribution.shap_explainer import SequenceSHAP
+from .attribution.ice_explainer import SequenceICE
 
 
 class AttributionMap:
@@ -352,7 +352,10 @@ class InterpretabilityTool:
         aggregate_by_feature: bool = True
     ) -> AttributionResult:
         """
-        Compute Integrated Gradients attributions for the encoder prefix.
+        Compute Integrated Gradients attributions for encoder prefix and decoder SOS jointly.
+
+        Uses a single joint IG computation over both inputs simultaneously,
+        which satisfies the completeness axiom.
 
         Args:
             prefix: Input prefix sequence as (categorical_tensors, numerical_tensors)
@@ -383,11 +386,11 @@ class InterpretabilityTool:
 
         # Embed inputs
         embedded_prefix = wrapper.embed_prefix(prefix)
-        embedded_prefix.requires_grad_(True)
         embedded_sos = wrapper.embed_sos(prefix)
 
-        # Generate baseline
-        baseline_tensor = baseline_gen.generate(prefix, embedded_prefix)
+        # Generate baselines
+        baseline_prefix = baseline_gen.generate(prefix, embedded_prefix)
+        baseline_sos = torch.zeros_like(embedded_sos)
 
         # Pre-resolve 'auto' target
         if target_value == 'auto' and feature_type == 'categorical':
@@ -395,27 +398,29 @@ class InterpretabilityTool:
                 preds = wrapper.forward(embedded_prefix, embedded_sos)
                 target_selector.select(preds, suffix_step)
 
-        # Create forward function and compute IG
-        forward_fn = wrapper.encoder_forward_fn(target_selector, embedded_sos)
+        # Joint IG over both inputs simultaneously
+        emb_prefix_grad = embedded_prefix.clone().requires_grad_(True)
+        emb_sos_grad = embedded_sos.clone().requires_grad_(True)
+        forward_fn = wrapper.combined_forward_fn(target_selector)
         ig = IntegratedGradients(forward_fn, multiply_by_inputs=True)
 
         if return_convergence_delta:
-            attributions, delta = ig.compute(
-                inputs=(embedded_prefix,),
-                baselines=(baseline_tensor,),
+            (enc_attrs, sos_attrs), delta = ig.compute(
+                inputs=(emb_prefix_grad, emb_sos_grad),
+                baselines=(baseline_prefix, baseline_sos),
                 n_steps=n_steps,
                 return_convergence_delta=True
             )
         else:
-            attributions = ig.compute(
-                inputs=(embedded_prefix,),
-                baselines=(baseline_tensor,),
+            enc_attrs, sos_attrs = ig.compute(
+                inputs=(emb_prefix_grad, emb_sos_grad),
+                baselines=(baseline_prefix, baseline_sos),
                 n_steps=n_steps,
                 return_convergence_delta=False
             )
             delta = None
 
-        attr_tensor = attributions[0]
+        attr_tensor = enc_attrs
 
         # Aggregate by feature
         feature_attrs = None
@@ -493,34 +498,58 @@ class InterpretabilityTool:
                 preds = wrapper.forward(embedded_prefix, embedded_sos)
                 target_selector.select(preds, suffix_step)
 
-        # === Encoder attributions ===
+        # === Joint IG over encoder prefix and SOS ===
         baseline_prefix = baseline_gen.generate(prefix, embedded_prefix)
+        baseline_sos = torch.zeros_like(embedded_sos)
         emb_prefix_grad = embedded_prefix.clone().requires_grad_(True)
-        forward_fn_enc = wrapper.encoder_forward_fn(target_selector, embedded_sos)
-        ig_enc = IntegratedGradients(forward_fn_enc, multiply_by_inputs=True)
-        enc_attrs, enc_delta = ig_enc.compute(
-            inputs=(emb_prefix_grad,), baselines=(baseline_prefix,),
+        emb_sos_grad = embedded_sos.clone().requires_grad_(True)
+        forward_fn = wrapper.combined_forward_fn(target_selector)
+        ig = IntegratedGradients(forward_fn, multiply_by_inputs=True)
+        (enc_attrs, sos_attrs), delta = ig.compute(
+            inputs=(emb_prefix_grad, emb_sos_grad),
+            baselines=(baseline_prefix, baseline_sos),
             n_steps=n_steps, return_convergence_delta=True
         )
 
-        # === Decoder chain attributions ===
-        # Get all decoder inputs for this suffix step
-        decoder_inputs = wrapper.get_decoder_inputs_for_step(
-            embedded_prefix, embedded_sos, suffix_step
-        )  # [suffix_step + 1, batch, dec_dim]
+        enc_attr_tensor = enc_attrs   # [prefix_len, batch, enc_dim]
 
-        # Compute IG for decoder chain
-        decoder_inputs_grad = decoder_inputs.clone().requires_grad_(True)
-        baseline_decoder = torch.zeros_like(decoder_inputs)
-        forward_fn_dec = wrapper.decoder_chain_forward_fn(target_selector, embedded_prefix)
-        ig_dec = IntegratedGradients(forward_fn_dec, multiply_by_inputs=True)
-        dec_attrs, dec_delta = ig_dec.compute(
-            inputs=(decoder_inputs_grad,), baselines=(baseline_decoder,),
-            n_steps=n_steps, return_convergence_delta=True
-        )
+        if suffix_step > 0:
+            # For suffix_step > 0, also attribute to intermediate decoder predictions.
+            # The SOS attribution is already captured in sos_attrs above.
+            # Here we get attributions for [pred_0, ..., pred_{t-1}].
+            decoder_inputs = wrapper.get_decoder_inputs_for_step(
+                embedded_prefix, embedded_sos, suffix_step
+            )  # [suffix_step + 1, batch, dec_dim]
+            # Take only intermediate predictions (skip SOS at index 0)
+            intermediate_inputs = decoder_inputs[1:]  # [suffix_step, batch, dec_dim]
 
-        enc_attr_tensor = enc_attrs[0]  # [prefix_len, batch, enc_dim]
-        dec_attr_tensor = dec_attrs[0]  # [suffix_step + 1, batch, dec_dim]
+            if intermediate_inputs.shape[0] > 0:
+                intermediate_grad = intermediate_inputs.clone().requires_grad_(True)
+                baseline_intermediate = torch.zeros_like(intermediate_inputs)
+                forward_fn_dec = wrapper.decoder_chain_forward_fn(target_selector, embedded_prefix)
+
+                # Build decoder chain with SOS fixed + variable intermediates
+                fixed_sos_for_chain = embedded_sos.detach()
+                def chain_forward(intermediates):
+                    full_chain = torch.cat([fixed_sos_for_chain, intermediates], dim=0)
+                    preds = wrapper.forward_from_decoder_sequence(
+                        embedded_prefix.detach(), full_chain, suffix_step
+                    )
+                    return target_selector.select_direct(preds)
+
+                ig_chain = IntegratedGradients(chain_forward, multiply_by_inputs=True)
+                chain_attrs_tuple = ig_chain.compute(
+                    inputs=(intermediate_grad,), baselines=(baseline_intermediate,),
+                    n_steps=n_steps, return_convergence_delta=False
+                )
+                chain_attrs = chain_attrs_tuple[0]  # [suffix_step, batch, dec_dim]
+                # Concatenate SOS attrs + intermediate attrs for full decoder tensor
+                dec_attr_tensor = torch.cat([sos_attrs, chain_attrs], dim=0)
+            else:
+                dec_attr_tensor = sos_attrs  # [1, batch, dec_dim]
+        else:
+            # suffix_step == 0: decoder input is just SOS
+            dec_attr_tensor = sos_attrs  # [1, batch, dec_dim]
 
         # Determine actual prefix length to use
         prefix_len_to_use = actual_prefix_length if actual_prefix_length else enc_attr_tensor.shape[0]
@@ -553,8 +582,7 @@ class InterpretabilityTool:
             'decoder_attributions': dec_feature_attrs,
             'encoder_labels': encoder_labels,
             'decoder_labels': decoder_labels,
-            'encoder_convergence_delta': enc_delta,
-            'decoder_convergence_delta': dec_delta,
+            'convergence_delta': delta,
             'target_description': target_selector.get_description(),
             'suffix_step': suffix_step
         }
@@ -648,7 +676,9 @@ class InterpretabilityTool:
         1. Encoder prefix → hidden states
         2. Decoder SOS (last prefix event) → predictions
 
-        This computes IG attributions for each path separately.
+        Uses a single joint IG computation over both inputs simultaneously,
+        which satisfies the completeness axiom (sum of all attributions =
+        F(input) - F(baseline)).
 
         Returns:
             Dict with encoder/decoder totals, fractions, and per-feature attributions
@@ -678,26 +708,19 @@ class InterpretabilityTool:
                 preds = wrapper.forward(embedded_prefix, embedded_sos)
                 target_selector.select(preds, suffix_step)
 
-        # Compute IG for encoder prefix
+        # Joint IG over both inputs simultaneously
         emb_prefix_grad = embedded_prefix.clone().requires_grad_(True)
-        forward_fn_enc = wrapper.encoder_forward_fn(target_selector, embedded_sos)
-        ig_enc = IntegratedGradients(forward_fn_enc, multiply_by_inputs=True)
-        enc_attrs, enc_delta = ig_enc.compute(
-            inputs=(emb_prefix_grad,), baselines=(baseline_prefix,),
-            n_steps=n_steps, return_convergence_delta=True
-        )
-
-        # Compute IG for decoder SOS
         emb_sos_grad = embedded_sos.clone().requires_grad_(True)
-        forward_fn_sos = wrapper.sos_forward_fn(target_selector, embedded_prefix)
-        ig_sos = IntegratedGradients(forward_fn_sos, multiply_by_inputs=True)
-        sos_attrs, sos_delta = ig_sos.compute(
-            inputs=(emb_sos_grad,), baselines=(baseline_sos,),
+        forward_fn = wrapper.combined_forward_fn(target_selector)
+        ig = IntegratedGradients(forward_fn, multiply_by_inputs=True)
+        (enc_attrs, sos_attrs), delta = ig.compute(
+            inputs=(emb_prefix_grad, emb_sos_grad),
+            baselines=(baseline_prefix, baseline_sos),
             n_steps=n_steps, return_convergence_delta=True
         )
 
-        enc_attr_tensor = enc_attrs[0]
-        sos_attr_tensor = sos_attrs[0]
+        enc_attr_tensor = enc_attrs
+        sos_attr_tensor = sos_attrs
 
         # Compute totals and fractions
         enc_total = enc_attr_tensor.abs().sum().item()
@@ -729,8 +752,7 @@ class InterpretabilityTool:
             'decoder_sos_attributions': sos_feature_attrs,
             'encoder_feature_totals': {n: a.abs().sum().item() for n, a in enc_feature_attrs.items()},
             'decoder_sos_feature_totals': {n: a.abs().sum().item() for n, a in sos_feature_attrs.items()},
-            'encoder_convergence_delta': enc_delta,
-            'decoder_convergence_delta': sos_delta,
+            'convergence_delta': delta,
             'target_description': target_selector.get_description()
         }
 
@@ -985,11 +1007,7 @@ class InterpretabilityTool:
             if match:
                 resolved_target = int(match.group(1))
 
-        # Combine convergence deltas
-        enc_delta = chain_result.get('encoder_convergence_delta', 0)
-        dec_delta = chain_result.get('decoder_convergence_delta', 0)
-        convergence_delta = max(abs(enc_delta) if enc_delta else 0,
-                               abs(dec_delta) if dec_delta else 0)
+        convergence_delta = chain_result.get('convergence_delta', 0)
 
         return filtered_attributions, convergence_delta, resolved_target, step_labels
 
