@@ -19,7 +19,7 @@ except ImportError:
     _MP_DECLARE_AVAILABLE = False
 
 try:
-    from .rum_mpdeclare import discover_mpdeclare, MPDeclareConstraint
+    from .rum_mpdeclare import discover_mpdeclare, MPDeclareConstraint, mpdeclare_to_declare_constraints, RUM_TO_DECLARE_TEMPLATE
     _RUM_AVAILABLE = True
 except ImportError:
     _RUM_AVAILABLE = False

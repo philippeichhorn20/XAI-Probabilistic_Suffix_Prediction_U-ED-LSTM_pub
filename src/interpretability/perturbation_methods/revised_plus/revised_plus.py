@@ -53,20 +53,22 @@ from ..declare import DeclareConstraint, DeclareConstraintChecker, DeclareConstr
 class RevisedPlusConfig:
     """Configuration for REVISED+ counterfactual generation."""
 
-    # VAE architecture
+    # VAE architecture (aligned with Stevens et al. 2024)
     vae_embed_dim: int = 24
-    vae_hidden_dim: int = 96
-    vae_latent_dim: int = 24
-    vae_num_layers: int = 1
-    vae_dropout: float = 0.0
+    vae_encoder_hidden: int = 50    # hidden_dim1, BiLSTM encoder hidden per direction
+    vae_decoder_hidden: int = 50    # Decoder LSTM hidden dim
+    vae_latent_dim: int = 20        # hidden_dim2 (bottleneck)
+    vae_num_layers: int = 2         # lstm_size
+    vae_dropout: float = 0.3
 
     # VAE training
     vae_epochs: int = 100
     vae_lr: float = 1e-3
     vae_kl_weight: float = 0.1
-    vae_batch_size: int = 64
-    vae_grad_clip: float = 1.0
-    vae_constraint_weight: float = 1.0
+    vae_batch_size: int = 128
+    vae_grad_clip: float = 0.25
+    vae_weight_decay: float = 1e-5
+    vae_constraint_weight: float = 0.0  # Disabled: non-differentiable, very slow
 
     # Declare constraint mining (TLC only — no DLC for next-activity prediction)
     declare_min_support: float = 0.9
@@ -94,6 +96,9 @@ class RevisedPlusConfig:
     # 2 = allow ±2 events difference.
     max_length_delta: Optional[int] = 2
 
+    # Direct mutation search
+    max_mutation_positions: int = 2  # max simultaneous activity swaps (1 or 2)
+
     # Output
     top_k: int = 5
     diversity_threshold: float = 0.3
@@ -103,6 +108,7 @@ class RevisedPlusConfig:
     seed: int = 42
     verbose: bool = True
     device: str = "cpu"
+    activity_feature: str = "Activity"  # name of the activity feature in model output
 
 
 # =============================================================================
@@ -247,9 +253,10 @@ class RevisedPlusModelPredictor:
     This class bridges the two formats.
     """
 
-    def __init__(self, model: torch.nn.Module, suffix_step: int = 0):
+    def __init__(self, model: torch.nn.Module, suffix_step: int = 0, activity_feature: str = "Activity"):
         self.model = model
         self.suffix_step = suffix_step
+        self.activity_key = f"{activity_feature}_mean"
         self.device = next(model.parameters()).device
         self.model.eval()
 
@@ -265,7 +272,7 @@ class RevisedPlusModelPredictor:
             # Model returns: predictions, (h,c), seq_len_pred, output_feature_indices
             # predictions = [cat_dict, num_dict]
             predictions = self.model((cat_dev, num_dev))[0]
-            logits = predictions[0]["Activity_mean"][self.suffix_step]
+            logits = predictions[0][self.activity_key][self.suffix_step]
             return logits.argmax(dim=-1).item()
 
     def predict_proba(
@@ -278,7 +285,7 @@ class RevisedPlusModelPredictor:
 
         with torch.no_grad():
             predictions = self.model((cat_dev, num_dev))[0]
-            logits = predictions[0]["Activity_mean"][self.suffix_step]
+            logits = predictions[0][self.activity_key][self.suffix_step]
             probs = torch.softmax(logits, dim=-1)
             return probs.cpu().numpy().squeeze(0)
 
@@ -317,7 +324,7 @@ class RevisedPlusModelPredictor:
 
             with torch.no_grad():
                 predictions = self.model((b_cat, b_num))[0]
-                logits = predictions[0]["Activity_mean"][self.suffix_step]
+                logits = predictions[0][self.activity_key][self.suffix_step]
                 probs = torch.softmax(logits, dim=-1)
                 preds = logits.argmax(dim=-1)
 
@@ -371,6 +378,49 @@ class RevisedPlus:
         torch.manual_seed(config.seed)
         np.random.seed(config.seed)
 
+    # --- Padding conversion helpers ---
+    # The prediction model uses left-padding (events at end);
+    # the VAE uses right-padding (events at start).
+
+    def _left_to_right_pad(self, cat_b: List[torch.Tensor], num_stacked: torch.Tensor):
+        """Convert left-padded tensors to right-padded for VAE."""
+        seq_len = cat_b[0].shape[-1]
+        prefix_len = int((cat_b[0].squeeze(0) != 0).sum().item())
+        event_start = seq_len - prefix_len
+
+        cat_rp = []
+        for c in cat_b:
+            t = torch.zeros_like(c)
+            t[..., :prefix_len] = c[..., event_start:]
+            cat_rp.append(t)
+        num_rp = torch.zeros_like(num_stacked)
+        num_rp[:, :prefix_len] = num_stacked[:, event_start:]
+        return cat_rp, num_rp
+
+    def _right_to_left_pad(self, cat_decoded: List[torch.Tensor], num_out: Optional[torch.Tensor]):
+        """Convert right-padded VAE output to left-padded for prediction model."""
+        seq_len = cat_decoded[0].shape[-1]
+        cat_lp = []
+        for c in cat_decoded:
+            # Per-sample conversion (each may have different length)
+            batch_size = c.shape[0]
+            t = torch.zeros_like(c)
+            for b in range(batch_size):
+                length = int((c[b] != 0).sum().item())
+                if length > 0:
+                    t[b, seq_len - length:] = c[b, :length]
+            cat_lp.append(t)
+
+        num_lp = None
+        if num_out is not None:
+            num_lp = torch.zeros_like(num_out)
+            batch_size = cat_decoded[0].shape[0]
+            for b in range(batch_size):
+                length = int((cat_decoded[0][b] != 0).sum().item())
+                if length > 0:
+                    num_lp[b, seq_len - length:] = num_out[b, :length]
+        return cat_lp, num_lp
+
     @classmethod
     def from_dataset(
         cls,
@@ -380,6 +430,8 @@ class RevisedPlus:
         config: Optional[RevisedPlusConfig] = None,
         pretrained_vae: Optional[SimpleSequenceVAE] = None,
         vae_path: Optional[str] = None,
+        constraints: Optional[Set[DeclareConstraint]] = None,
+        data_conditions: Optional[Dict] = None,
     ) -> "RevisedPlus":
         """Factory: build from dataset. Trains VAE, mines constraints.
 
@@ -387,9 +439,11 @@ class RevisedPlus:
             vae_path: Path to save/load the VAE model. If the file exists,
                      the VAE is loaded instead of trained. After training,
                      the VAE is saved to this path.
+            constraints: Pre-mined constraints. If provided, skips Python mining.
+            data_conditions: Dict mapping DeclareConstraint → data condition string.
         """
         config = config or RevisedPlusConfig()
-        predictor = RevisedPlusModelPredictor(model, suffix_step=config.suffix_step)
+        predictor = RevisedPlusModelPredictor(model, suffix_step=config.suffix_step, activity_feature=config.activity_feature)
 
         n_cat = len(dataset[0][0])
         n_num = len(dataset[0][1])
@@ -412,7 +466,8 @@ class RevisedPlus:
             prefix_safe_constraints=set(),
             config=config,
         )
-        rp.fit(dataset, pretrained_vae=pretrained_vae, vae_path=vae_path)
+        rp.fit(dataset, pretrained_vae=pretrained_vae, vae_path=vae_path,
+               constraints=constraints, data_conditions=data_conditions)
         return rp
 
     # =========================================================================
@@ -424,6 +479,8 @@ class RevisedPlus:
         dataset,
         pretrained_vae: Optional[SimpleSequenceVAE] = None,
         vae_path: Optional[str] = None,
+        constraints: Optional[Set[DeclareConstraint]] = None,
+        data_conditions: Optional[Dict] = None,
     ) -> "RevisedPlus":
         """
         Train VAE on random-length prefixes and mine Declare constraints.
@@ -438,14 +495,19 @@ class RevisedPlus:
             vae_path: Path to save/load the VAE model. If the file exists,
                      the VAE is loaded instead of trained. After training,
                      the VAE is saved to this path.
+            constraints: Pre-mined constraints (set of DeclareConstraint).
+                        If provided, skips Python constraint mining entirely.
+            data_conditions: Dict mapping DeclareConstraint → data condition string.
+                            Stored but not used in search (for downstream analysis).
         """
         n_cat = len(dataset[0][0])
         seq_len = self.seq_len
 
-        # --- DataLoader with prefix augmentation (left-padded) ---
-        # Data is LEFT-PADDED: padding zeros at the start, events at the end.
-        # For each trace, sample a prefix length k ~ Uniform(1, trace_length),
-        # take the first k events, and left-pad back to seq_len.
+        # --- DataLoader with prefix augmentation (RIGHT-padded for VAE) ---
+        # Source data is left-padded (events at end), but we convert to
+        # right-padded (events at start, padding at end) for the VAE.
+        # This makes the autoregressive decoder consistent between training
+        # and inference: both start generating at position 0.
         def collate_fn(batch):
             cat_batch_list = [[] for _ in range(n_cat)]
             num_batch_list = []
@@ -459,16 +521,15 @@ class RevisedPlus:
                 # Random prefix length: at least 1, at most full trace
                 k = torch.randint(1, max(2, trace_len + 1), (1,)).item()
 
-                # Extract first k events and left-pad to seq_len
-                new_start = seq_len - k
+                # Extract first k events and RIGHT-pad to seq_len
                 for i in range(n_cat):
                     t = torch.zeros_like(cat_tuple[i])
-                    t[new_start:] = cat_tuple[i][event_start:event_start + k]
+                    t[:k] = cat_tuple[i][event_start:event_start + k]
                     cat_batch_list[i].append(t)
 
                 num_stacked = torch.stack(num_tuple, dim=-1)  # [seq_len, n_num]
                 num_new = torch.zeros_like(num_stacked)
-                num_new[new_start:] = num_stacked[event_start:event_start + k]
+                num_new[:k] = num_stacked[event_start:event_start + k]
                 num_batch_list.append(num_new)
 
             cat_batch = [torch.stack(cat_batch_list[i]) for i in range(n_cat)]
@@ -481,6 +542,51 @@ class RevisedPlus:
             shuffle=True,
             collate_fn=collate_fn,
         )
+
+        # --- Declare constraints: use pre-mined or mine from scratch ---
+        # Constraints must be available before VAE training so prefix-safe
+        # constraints can be used as a training penalty.
+        if constraints is not None:
+            # Use pre-mined constraints (e.g. from RuM/MINERful)
+            self.all_constraints = constraints
+            self.prefix_safe_constraints = set(
+                DeclareConstraintChecker.prefix_safe_constraints(self.all_constraints)
+            )
+            self.data_conditions = data_conditions or {}
+            if self.config.verbose:
+                print(
+                    f"Using {len(self.all_constraints)} pre-mined constraints "
+                    f"({len(self.prefix_safe_constraints)} prefix-safe, "
+                    f"{len(self.data_conditions)} with data conditions)"
+                )
+        else:
+            if self.config.verbose:
+                print("Extracting activity sequences...")
+            from tqdm.auto import tqdm
+            activity_sequences = []
+            iter_range = tqdm(range(len(dataset)), desc="Extracting sequences", disable=not self.config.verbose)
+            for i in iter_range:
+                cat_tuple, _, _ = dataset[i]
+                act_seq = [x.item() for x in cat_tuple[0] if x.item() != 0]
+                activity_sequences.append(act_seq)
+
+            activity_vocab_size = self.cat_vocab_sizes[0]
+            miner = DeclareConstraintMiner(
+                vocab_size=activity_vocab_size,
+                min_support=self.config.declare_min_support,
+            )
+            self.all_constraints = miner.mine(
+                activity_sequences, templates=self.config.declare_templates
+            )
+            self.prefix_safe_constraints = set(
+                DeclareConstraintChecker.prefix_safe_constraints(self.all_constraints)
+            )
+            self.data_conditions = {}
+            if self.config.verbose:
+                print(
+                    f"Mined {len(self.all_constraints)} constraints "
+                    f"({len(self.prefix_safe_constraints)} prefix-safe)"
+                )
 
         # --- VAE: load from file, accept pretrained, or train from scratch ---
         vae_loaded = False
@@ -499,20 +605,24 @@ class RevisedPlus:
                 num_features=self.num_features,
                 seq_len=self.seq_len,
                 embed_dim=self.config.vae_embed_dim,
-                hidden_dim=self.config.vae_hidden_dim,
+                encoder_hidden=self.config.vae_encoder_hidden,
+                decoder_hidden=self.config.vae_decoder_hidden,
                 latent_dim=self.config.vae_latent_dim,
                 num_layers=self.config.vae_num_layers,
                 dropout=self.config.vae_dropout,
             )
-            train_vae(
+            self.train_history = train_vae(
                 self.vae,
                 dataloader,
                 epochs=self.config.vae_epochs,
                 lr=self.config.vae_lr,
                 kl_weight=self.config.vae_kl_weight,
+                constraints=list(self.all_constraints),
+                constraint_weight=self.config.vae_constraint_weight,
                 device=self.config.device,
                 verbose=self.config.verbose,
                 grad_clip=self.config.vae_grad_clip,
+                weight_decay=self.config.vae_weight_decay,
             )
             self.vae = self.vae.to(self.device)
             # Save trained VAE for reuse
@@ -523,33 +633,6 @@ class RevisedPlus:
                 if self.config.verbose:
                     print(f"VAE saved to {vae_path}")
         self.vae.eval()
-
-        # --- Extract activity sequences (full traces for constraint mining) ---
-        if self.config.verbose:
-            print("Extracting activity sequences...")
-        activity_sequences = []
-        for i in range(len(dataset)):
-            cat_tuple, _, _ = dataset[i]
-            act_seq = [x.item() for x in cat_tuple[0] if x.item() != 0]
-            activity_sequences.append(act_seq)
-
-        # --- Mine Declare constraints ---
-        activity_vocab_size = self.cat_vocab_sizes[0]
-        miner = DeclareConstraintMiner(
-            vocab_size=activity_vocab_size,
-            min_support=self.config.declare_min_support,
-        )
-        self.all_constraints = miner.mine(
-            activity_sequences, templates=self.config.declare_templates
-        )
-        self.prefix_safe_constraints = set(
-            DeclareConstraintChecker.prefix_safe_constraints(self.all_constraints)
-        )
-        if self.config.verbose:
-            print(
-                f"Mined {len(self.all_constraints)} constraints "
-                f"({len(self.prefix_safe_constraints)} prefix-safe)"
-            )
 
         return self
 
@@ -600,14 +683,15 @@ class RevisedPlus:
                 f"(p={original_prob:.3f}), prefix_len={actual_prefix_len}"
             )
 
-        # Encode to VAE latent space
+        # Encode to VAE latent space (convert left-padded → right-padded)
+        cat_rp, num_rp = self._left_to_right_pad(cat_b, num_stacked)
         self.vae.eval()
         with torch.no_grad():
             z_orig, _ = self.vae.encode(
-                [c.to(self.device) for c in cat_b], num_stacked.to(self.device)
+                [c.to(self.device) for c in cat_rp], num_rp.to(self.device)
             )
 
-        # Search
+        # VAE latent space search
         valid_cfs = self._search_latent_space(
             z_orig=z_orig,
             original_cat=cat_b,
@@ -618,6 +702,20 @@ class RevisedPlus:
             fixed_prefix_len=fixed_prefix_len,
             actual_prefix_len=actual_prefix_len,
         )
+        n_vae_candidates = (
+            self.config.n_candidates_per_round * self.config.n_search_rounds
+        )
+
+        # Direct mutation search
+        mutation_cfs, n_mutation_candidates = self._search_direct_mutations(
+            original_cat=cat_b,
+            original_num_stacked=num_stacked,
+            original_num_list=num_list,
+            original_pred=original_pred,
+            target_class=target_class,
+            actual_prefix_len=actual_prefix_len,
+        )
+        valid_cfs.extend(mutation_cfs)
 
         # Select diverse top-k
         diverse_cfs = self._select_diverse(valid_cfs, self.config.top_k)
@@ -641,8 +739,7 @@ class RevisedPlus:
             target_class=target_class,
             target_class_name=target_name,
             counterfactuals=diverse_cfs,
-            n_candidates_evaluated=self.config.n_candidates_per_round
-            * self.config.n_search_rounds,
+            n_candidates_evaluated=n_vae_candidates + n_mutation_candidates,
             n_valid_counterfactuals=len(valid_cfs),
             search_time_seconds=elapsed,
             n_prefix_safe_constraints=len(self.prefix_safe_constraints),
@@ -763,18 +860,19 @@ class RevisedPlus:
             )
             z_candidates = z_center.expand(n_candidates, -1) + noise_scale * z_noise
 
-            # Decode all candidates through VAE
-            # The VAE was trained on prefixes, so outputs are naturally
-            # prefix-shaped: real events followed by padding zeros.
+            # Decode all candidates through VAE (right-padded output)
             self.vae.eval()
             with torch.no_grad():
                 cat_logits, num_out = self.vae.decode(z_candidates)
 
-            # Discrete decode: argmax on categorical logits
-            cat_decoded = [logits.argmax(dim=-1) for logits in cat_logits]
-            # num_out: [N, seq_len, n_num]
+            # Discrete decode: argmax on categorical logits (still right-padded)
+            cat_decoded_rp = [logits.argmax(dim=-1) for logits in cat_logits]
+
+            # Convert right-padded VAE output → left-padded for prediction model
+            cat_decoded, num_out = self._right_to_left_pad(cat_decoded_rp, num_out)
 
             # Splice fixed prefix back in (positions 0..fixed_prefix_len-1)
+            # Note: fixed_prefix_len refers to left-padded positions
             if fixed_prefix_len > 0:
                 for i, orig_c in enumerate(original_cat):
                     orig_prefix = orig_c[:, :fixed_prefix_len].expand(n_candidates, -1)
@@ -854,6 +952,119 @@ class RevisedPlus:
             )
 
         return all_valid
+
+    # =========================================================================
+    # Direct Mutation Search
+    # =========================================================================
+
+    def _search_direct_mutations(
+        self,
+        original_cat: List[torch.Tensor],
+        original_num_stacked: torch.Tensor,
+        original_num_list: List[torch.Tensor],
+        original_pred: int,
+        target_class: Optional[int],
+        actual_prefix_len: int,
+    ) -> Tuple[List[RevisedPlusCounterfactual], int]:
+        """
+        Direct activity mutations: swap activities at specific positions.
+
+        Generates candidates by replacing the activity at event positions
+        with every other valid activity. Keeps all other features unchanged.
+        This finds counterfactuals that differ in specific activity choices
+        rather than sequence length.
+
+        Returns:
+            (valid_counterfactuals, n_candidates_generated)
+        """
+        all_valid = []
+        seq_len = original_cat[0].shape[1]
+        pad_len = seq_len - actual_prefix_len
+        n_activities = self.cat_vocab_sizes[0]  # activity vocab size
+
+        orig_acts = original_cat[0].squeeze().cpu()
+        event_positions = list(range(pad_len, seq_len))
+
+        # --- Build all mutation candidates ---
+        # Each candidate: (mutated activity tensor [seq_len], list of mutated positions)
+        mutations = []
+
+        # Single-position mutations
+        for pos in event_positions:
+            orig_act = orig_acts[pos].item()
+            for new_act in range(1, n_activities):  # skip padding (0)
+                if new_act == orig_act:
+                    continue
+                mut = orig_acts.clone()
+                mut[pos] = new_act
+                mutations.append(mut)
+
+        # Two-position mutations
+        if self.config.max_mutation_positions >= 2 and len(event_positions) >= 2:
+            from itertools import combinations
+            for pos_a, pos_b in combinations(event_positions, 2):
+                orig_a = orig_acts[pos_a].item()
+                orig_b = orig_acts[pos_b].item()
+                for new_a in range(1, n_activities):
+                    if new_a == orig_a:
+                        continue
+                    for new_b in range(1, n_activities):
+                        if new_b == orig_b:
+                            continue
+                        mut = orig_acts.clone()
+                        mut[pos_a] = new_a
+                        mut[pos_b] = new_b
+                        mutations.append(mut)
+
+        if not mutations:
+            return [], 0
+
+        n_total = len(mutations)
+        if self.config.verbose:
+            print(f"Direct mutations: {n_total} candidates "
+                  f"({actual_prefix_len} positions × {n_activities - 1} activities, "
+                  f"max {self.config.max_mutation_positions} positions)")
+
+        # Stack into batch tensors
+        # Activity feature (index 0) is mutated; all other cat features are copied
+        act_batch = torch.stack(mutations, dim=0)  # [N, seq_len]
+        cat_batch = [act_batch]
+        for feat_idx in range(1, len(original_cat)):
+            cat_batch.append(original_cat[feat_idx].expand(n_total, -1))
+
+        # Numerical features: same for all candidates
+        num_batch = original_num_stacked.expand(n_total, -1, -1)
+
+        # Batch predict
+        preds, probs = self.predictor.predict_batch(cat_batch, num_batch)
+
+        # Filter valid counterfactuals
+        valid_mask = preds != original_pred
+        if target_class is not None:
+            valid_mask &= preds == target_class
+        valid_indices = np.where(valid_mask)[0]
+
+        # Score valid candidates
+        z_dummy = torch.zeros(self.config.vae_latent_dim)
+        for idx in valid_indices:
+            cf = self._score_candidate(
+                candidate_cat=[c[idx:idx + 1] for c in cat_batch],
+                candidate_num=num_batch[idx:idx + 1],
+                candidate_z=z_dummy,
+                original_cat=original_cat,
+                original_num_stacked=original_num_stacked,
+                candidate_pred=int(preds[idx]),
+                candidate_prob=float(probs[idx, int(preds[idx])]),
+                target_class=target_class,
+            )
+            if cf is not None:
+                all_valid.append(cf)
+
+        if self.config.verbose:
+            print(f"  → {len(valid_indices)} changed prediction, "
+                  f"{len(all_valid)} passed scoring")
+
+        return all_valid, n_total
 
     # =========================================================================
     # Scoring
@@ -1126,6 +1337,8 @@ def create_revised_plus_for_model(
     config: Optional[RevisedPlusConfig] = None,
     pretrained_vae: Optional[SimpleSequenceVAE] = None,
     vae_path: Optional[str] = None,
+    constraints: Optional[Set[DeclareConstraint]] = None,
+    data_conditions: Optional[Dict] = None,
 ) -> RevisedPlus:
     """
     Convenience factory: create and fit REVISED+ from a model and dataset.
@@ -1139,6 +1352,8 @@ def create_revised_plus_for_model(
         vae_path: Path to save/load the VAE model. If the file exists,
                  the VAE is loaded instead of trained. After training,
                  the VAE is saved to this path.
+        constraints: Pre-mined constraints. If provided, skips Python mining.
+        data_conditions: Dict mapping DeclareConstraint → data condition string.
 
     Returns:
         Fitted RevisedPlus instance ready for explain().
@@ -1150,4 +1365,6 @@ def create_revised_plus_for_model(
         config=config,
         pretrained_vae=pretrained_vae,
         vae_path=vae_path,
+        constraints=constraints,
+        data_conditions=data_conditions,
     )

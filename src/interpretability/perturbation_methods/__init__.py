@@ -9,7 +9,10 @@ This package provides counterfactual explanation methods for predictive process 
 - **REVISED+** (Stevens et al., 2024): LSTM-VAE + Declare constraints approach
   Generates feasible and plausible counterfactuals via manifold learning.
 
-Both methods are adapted for next activity prediction.
+- **GA Counterfactual** (Guidotti et al., 2024 adapted): Genetic algorithm with
+  constraint-preserving operators for counterfactual generation.
+
+All methods are adapted for next activity prediction.
 
 Example usage:
     >>> from src.interpretability.perturbation_methods import RevisedPlus, RevisedPlusConfig
@@ -89,10 +92,22 @@ except ImportError:
     _MP_DECLARE_AVAILABLE = False
 
 try:
-    from .revised_plus import discover_mpdeclare, MPDeclareConstraint
+    from .revised_plus import discover_mpdeclare, MPDeclareConstraint, mpdeclare_to_declare_constraints, RUM_TO_DECLARE_TEMPLATE
     _RUM_AVAILABLE = True
 except ImportError:
     _RUM_AVAILABLE = False
+
+# =============================================================================
+# GA Counterfactual (Guidotti et al. 2024 adapted)
+# =============================================================================
+
+from .ga_counterfactual import (
+    GACounterfactualConfig,
+    GACounterfactualResult,
+    GACounterfactualExplanation,
+    GACounterfactual,
+    create_ga_counterfactual_for_model,
+)
 
 # =============================================================================
 # Exports
@@ -143,7 +158,18 @@ if _RUM_AVAILABLE:
     __all__.extend([
         'discover_mpdeclare',
         'MPDeclareConstraint',
+        'mpdeclare_to_declare_constraints',
+        'RUM_TO_DECLARE_TEMPLATE',
     ])
+
+# GA Counterfactual (always available)
+__all__.extend([
+    'GACounterfactualConfig',
+    'GACounterfactualResult',
+    'GACounterfactualExplanation',
+    'GACounterfactual',
+    'create_ga_counterfactual_for_model',
+])
 
 # Add LORELEY exports if available
 if _LORELEY_AVAILABLE:

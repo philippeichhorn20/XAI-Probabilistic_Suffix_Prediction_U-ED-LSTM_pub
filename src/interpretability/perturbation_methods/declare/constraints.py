@@ -186,8 +186,10 @@ class DeclareConstraintMiner:
                     constraints.add(c)
 
         # Mine binary
-        for a in activities:
-            for b in activities:
+        from tqdm.auto import tqdm
+        activity_list = sorted(activities)
+        for a in tqdm(activity_list, desc="Mining binary constraints", leave=False):
+            for b in activity_list:
                 if a == b:
                     continue
                 for t in templates:

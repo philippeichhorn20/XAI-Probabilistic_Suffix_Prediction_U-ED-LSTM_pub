@@ -56,11 +56,15 @@ class TensorDecoder:
         self.label_to_idx = {
             entry[0]: entry[2] for entry in all_categories[0]
         }
-        # invert: index -> label  (index 0 is always padding)
+        # invert: index -> label
+        # Index 0 is padding for the first feature (activity). For other
+        # features, 0 may represent a missing/unknown value rather than
+        # padding, so label it accordingly.
         self.idx_to_label = {}
-        for feat_name, mapping in self.label_to_idx.items():
+        for i, (feat_name, mapping) in enumerate(self.label_to_idx.items()):
             inverted = {v: k for k, v in mapping.items()}
-            inverted[0] = "<pad>"  # padding
+            if 0 not in inverted:
+                inverted[0] = "<pad>" if i == 0 else "<none>"
             self.idx_to_label[feat_name] = inverted
 
         # vocab sizes: max index + 1 per categorical feature (authoritative from encoder)

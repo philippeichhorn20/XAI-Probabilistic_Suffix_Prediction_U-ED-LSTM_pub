@@ -52,31 +52,35 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS — compact layout
 st.markdown("""
 <style>
+    /* Global font size reduction */
+    html, body, [class*="css"] {
+        font-size: 13px;
+    }
     .main-header {
-        font-size: 2.5rem;
+        font-size: 1.6rem;
         font-weight: bold;
-        margin-bottom: 0.5rem;
+        margin-bottom: 0.2rem;
     }
     .sub-header {
-        font-size: 1.2rem;
+        font-size: 0.85rem;
         color: #666;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;
     }
     .activity-chip {
         display: inline-block;
-        padding: 8px 16px;
-        margin: 4px;
-        border-radius: 20px;
-        font-size: 14px;
+        padding: 4px 10px;
+        margin: 2px;
+        border-radius: 14px;
+        font-size: 11px;
         cursor: pointer;
         transition: transform 0.2s, box-shadow 0.2s;
     }
     .activity-chip:hover {
         transform: scale(1.05);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        box-shadow: 0 3px 6px rgba(0,0,0,0.2);
     }
     .prefix-chip {
         background-color: #1f77b4;
@@ -90,6 +94,38 @@ st.markdown("""
         background-color: #ff7f0e;
         color: white;
         border: 2px dashed #cc6600;
+    }
+    /* Tighter block spacing */
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 1rem;
+    }
+    /* Smaller headings */
+    h1 { font-size: 1.5rem !important; }
+    h2 { font-size: 1.2rem !important; }
+    h3 { font-size: 1.0rem !important; }
+    /* Compact sidebar */
+    section[data-testid="stSidebar"] {
+        font-size: 12px;
+    }
+    section[data-testid="stSidebar"] .stSelectbox label,
+    section[data-testid="stSidebar"] .stSlider label,
+    section[data-testid="stSidebar"] .stCheckbox label,
+    section[data-testid="stSidebar"] .stTextInput label {
+        font-size: 12px;
+    }
+    /* Smaller buttons */
+    .stButton > button {
+        font-size: 12px;
+        padding: 0.25rem 0.75rem;
+    }
+    /* Compact expander */
+    .streamlit-expanderHeader {
+        font-size: 13px;
+    }
+    /* Tighter widget spacing */
+    .stSelectbox, .stNumberInput, .stTextInput, .stSlider {
+        margin-bottom: -0.5rem;
     }
 </style>
 """, unsafe_allow_html=True)

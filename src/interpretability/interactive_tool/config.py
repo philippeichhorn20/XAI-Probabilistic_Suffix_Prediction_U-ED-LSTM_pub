@@ -20,12 +20,21 @@ class ModelConfig:
     # If None, will be auto-detected from data
     case_level_cat: List[str] = None
     case_level_num: List[str] = None
+    # Path to the source CSV (for recovering unseen encoded values)
+    csv_path: str = None
+    # Column name in CSV that holds the case ID
+    csv_case_col: str = "Case ID"
 
     def get_model_path(self, project_root: Path) -> Path:
         return project_root / self.model_path
 
     def get_test_data_path(self, project_root: Path) -> Path:
         return project_root / self.test_data_path
+
+    def get_csv_path(self, project_root: Path) -> Path:
+        if self.csv_path is None:
+            return None
+        return project_root / self.csv_path
 
 
 # ============================================================
@@ -48,6 +57,8 @@ AVAILABLE_MODELS: List[ModelConfig] = [
                         "seriousness", "seriousness_2", "service_level", "service_type",
                         "support_section", "workgroup"],
         case_level_num=None,  # Auto-detect numerical
+        csv_path="data/helpdesk.csv",
+        csv_case_col="Case ID",
     ),
     ModelConfig(
         name="domestic_declarations",
@@ -60,6 +71,8 @@ AVAILABLE_MODELS: List[ModelConfig] = [
         growing_num_values=["case_elapsed_time"],
         case_level_cat=None,
         case_level_num=None,
+        csv_path="data/domestic_declarations.csv",
+        csv_case_col="Case ID",
     ),
     ModelConfig(
         name="bpic17",
@@ -75,6 +88,8 @@ AVAILABLE_MODELS: List[ModelConfig] = [
         # Case-level features (constant for entire case)
         case_level_cat=["case:LoanGoal", "case:ApplicationType"],
         case_level_num=["case:RequestedAmount"],
+        csv_path="data/BPI_Challenge_2017.csv",
+        csv_case_col="case:concept:name",
     ),
 ]
 
