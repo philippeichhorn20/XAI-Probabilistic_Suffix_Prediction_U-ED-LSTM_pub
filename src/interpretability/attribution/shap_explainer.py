@@ -96,7 +96,13 @@ class SequenceSHAP:
         seq_len = cat_tensors[0].shape[1] if cat_tensors else num_tensors[0].shape[1]
 
         # Compute SHAP values using sampling
-        if feature_level:
+        if feature_level == 'hybrid':
+            # Case-level features: feature-level SHAP (one player per feature)
+            # Event-level features: per-timestep SHAP (one SHAP per timestep)
+            shap_values = self._compute_hybrid_shap(
+                prefix, baseline_prefix, target_fn, n_samples
+            )
+        elif feature_level:
             # Compute SHAP values per feature (aggregated across timesteps)
             shap_values = self._compute_feature_shap(
                 prefix, baseline_prefix, target_fn, n_samples
@@ -172,6 +178,168 @@ class SequenceSHAP:
                 prev_pred = new_pred
 
         # Scale by sequence length to get per-timestep values
+        for name in shap_values:
+            shap_values[name] = shap_values[name].abs()
+
+        return shap_values
+
+    def _detect_case_level_features(
+        self,
+        prefix: Tuple[List[Tensor], List[Tensor]],
+    ) -> Tuple[List[int], List[int]]:
+        """Auto-detect which features are case-level (constant in this prefix).
+
+        Returns:
+            (case_level_indices, event_level_indices) where indices are into
+            the combined [cat_features..., num_features...] list.
+        """
+        cat_tensors, num_tensors = prefix
+        cat_categories, num_categories = self.data_set_categories
+        n_cat = len(cat_categories)
+
+        case_level = []
+        event_level = []
+
+        for i, t in enumerate(cat_tensors[:n_cat]):
+            vals = t.squeeze(0) if t.dim() > 1 else t
+            non_pad = vals[vals != 0]
+            if len(non_pad) == 0 or len(non_pad.unique()) <= 1:
+                case_level.append(i)
+            else:
+                event_level.append(i)
+
+        for i, t in enumerate(num_tensors[:len(num_categories)]):
+            idx = n_cat + i
+            vals = t.squeeze(0) if t.dim() > 1 else t
+            non_pad = vals[vals != 0]
+            if len(non_pad) == 0 or len(non_pad.unique()) <= 1:
+                case_level.append(idx)
+            else:
+                event_level.append(idx)
+
+        return case_level, event_level
+
+    def _compute_hybrid_shap(
+        self,
+        prefix: Tuple[List[Tensor], List[Tensor]],
+        baseline: Tuple[List[Tensor], List[Tensor]],
+        target_fn: Callable,
+        n_samples: int,
+    ) -> Dict[str, Tensor]:
+        """Hybrid SHAP: feature-level for case-level features, per-timestep for event-level.
+
+        Case-level features (constant across all positions in the prefix) are
+        treated as single players — toggling them flips all positions at once.
+
+        Event-level features get per-timestep resolution: for each timestep t,
+        a separate permutation SHAP is run over the event-level features at
+        position t only, keeping everything else fixed.
+
+        Only non-padding timesteps are evaluated for the per-timestep part.
+        """
+        cat_tensors, num_tensors = prefix
+        cat_baseline, num_baseline = baseline
+        cat_categories, num_categories = self.data_set_categories
+        n_cat = len(cat_categories)
+        n_num = len(num_categories)
+        feature_names = [n for n, _, _ in cat_categories] + [n for n, _, _ in num_categories]
+        seq_len = cat_tensors[0].shape[1] if cat_tensors else num_tensors[0].shape[1]
+
+        # Detect actual prefix length (non-padding positions)
+        act_tensor = cat_tensors[0].squeeze(0) if cat_tensors else num_tensors[0].squeeze(0)
+        prefix_len = int((act_tensor != 0).sum().item())
+        pad_len = seq_len - prefix_len
+
+        case_level_idx, event_level_idx = self._detect_case_level_features(prefix)
+
+        # Initialize output
+        shap_values = {name: torch.zeros(seq_len) for name in feature_names}
+
+        # =============================================================
+        # Part 1: Case-level features — feature-level permutation SHAP
+        # =============================================================
+        if case_level_idx:
+            with torch.no_grad():
+                baseline_pred = target_fn(baseline)
+
+            for _ in range(n_samples):
+                perm = np.random.permutation(len(case_level_idx))
+                current = self._copy_prefix(baseline)
+                # Start with all event-level features already at real values
+                for ei in event_level_idx:
+                    if ei < n_cat:
+                        current[0][ei] = cat_tensors[ei].clone()
+                    else:
+                        current[1][ei - n_cat] = num_tensors[ei - n_cat].clone()
+
+                with torch.no_grad():
+                    prev_pred = target_fn(current)
+
+                for pos_in_perm in perm:
+                    fi = case_level_idx[pos_in_perm]
+                    if fi < n_cat:
+                        current[0][fi] = cat_tensors[fi].clone()
+                    else:
+                        current[1][fi - n_cat] = num_tensors[fi - n_cat].clone()
+
+                    with torch.no_grad():
+                        new_pred = target_fn(current)
+
+                    contribution = (new_pred - prev_pred).item()
+                    # Distribute uniformly across non-padding timesteps only
+                    if prefix_len > 0:
+                        shap_values[feature_names[fi]][pad_len:] += contribution / prefix_len / n_samples
+                    prev_pred = new_pred
+
+        # =============================================================
+        # Part 2: Event-level features — per-timestep permutation SHAP
+        # =============================================================
+        if event_level_idx:
+            n_event = len(event_level_idx)
+
+            # Only iterate over actual (non-padding) timesteps
+            for t in range(pad_len, seq_len):
+                for _ in range(n_samples):
+                    perm = np.random.permutation(n_event)
+                    # Start from baseline with case-level features at real values
+                    current = self._copy_prefix(baseline)
+                    for ci in case_level_idx:
+                        if ci < n_cat:
+                            current[0][ci] = cat_tensors[ci].clone()
+                        else:
+                            current[1][ci - n_cat] = num_tensors[ci - n_cat].clone()
+                    # Event-level features at all OTHER timesteps: use real values
+                    for ei in event_level_idx:
+                        if ei < n_cat:
+                            current[0][ei] = cat_tensors[ei].clone()
+                        else:
+                            current[1][ei - n_cat] = num_tensors[ei - n_cat].clone()
+                    # Event-level features at timestep t: start from baseline
+                    for ei in event_level_idx:
+                        if ei < n_cat:
+                            current[0][ei][0, t] = cat_baseline[ei][0, t]
+                        else:
+                            current[1][ei - n_cat][0, t] = num_baseline[ei - n_cat][0, t]
+
+                    with torch.no_grad():
+                        prev_pred = target_fn(current)
+
+                    for pos_in_perm in perm:
+                        ei = event_level_idx[pos_in_perm]
+                        # Switch this feature at timestep t from baseline to real
+                        if ei < n_cat:
+                            current[0][ei][0, t] = cat_tensors[ei][0, t]
+                        else:
+                            current[1][ei - n_cat][0, t] = num_tensors[ei - n_cat][0, t]
+
+                        with torch.no_grad():
+                            new_pred = target_fn(current)
+
+                        contribution = (new_pred - prev_pred).item()
+                        shap_values[feature_names[ei]][t] += contribution / n_samples
+                        prev_pred = new_pred
+
+        # Take absolute values
         for name in shap_values:
             shap_values[name] = shap_values[name].abs()
 

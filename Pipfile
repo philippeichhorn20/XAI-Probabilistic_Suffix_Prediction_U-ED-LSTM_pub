@@ -19,6 +19,8 @@ pyxdameraulevenshtein = "*"
 crps = "*"
 streamlit = "*"
 plotly = "*"
+dash = "*"
+dash-cytoscape = "*"
 
 [dev-packages]
 torch-tb-profiler = "*"

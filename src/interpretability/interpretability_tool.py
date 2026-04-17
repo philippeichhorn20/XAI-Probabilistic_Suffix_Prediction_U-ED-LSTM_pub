@@ -1020,7 +1020,7 @@ class InterpretabilityTool:
 
         shap_values = shap_explainer.compute(
             prefix=prefix, target_output=target, target_value=target_value,
-            suffix_step=suffix_step, n_samples=n_samples, baseline=baseline, feature_level=False
+            suffix_step=suffix_step, n_samples=n_samples, baseline=baseline, feature_level='hybrid'
         )
 
         filtered_attributions = {}

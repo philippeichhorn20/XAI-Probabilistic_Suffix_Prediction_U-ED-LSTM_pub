@@ -44,6 +44,8 @@ from .base import (
 
 # Declare constraints (shared between methods)
 from .declare import (
+    DataConjunct,
+    DataCondition,
     DeclareTemplate,
     DeclareConstraint,
     DeclareConstraintChecker,
@@ -92,7 +94,10 @@ except ImportError:
     _MP_DECLARE_AVAILABLE = False
 
 try:
-    from .revised_plus import discover_mpdeclare, MPDeclareConstraint, mpdeclare_to_declare_constraints, RUM_TO_DECLARE_TEMPLATE
+    from .revised_plus import (
+        discover_mpdeclare, MPDeclareConstraint, mpdeclare_to_declare_constraints,
+        RUM_TO_DECLARE_TEMPLATE, parse_data_condition_string,
+    )
     _RUM_AVAILABLE = True
 except ImportError:
     _RUM_AVAILABLE = False
@@ -130,6 +135,8 @@ __all__ = [
     'DeclareConstraint',
     'DeclareConstraintChecker',
     'DeclareConstraintMiner',
+    'DataConjunct',
+    'DataCondition',
 ]
 
 # REVISED+ (always available)
@@ -160,6 +167,7 @@ if _RUM_AVAILABLE:
         'MPDeclareConstraint',
         'mpdeclare_to_declare_constraints',
         'RUM_TO_DECLARE_TEMPLATE',
+        'parse_data_condition_string',
     ])
 
 # GA Counterfactual (always available)

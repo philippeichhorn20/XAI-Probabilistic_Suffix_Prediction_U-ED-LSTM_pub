@@ -2,10 +2,10 @@
 
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import jpype
 
-from ..declare import DeclareConstraint, DeclareTemplate
+from ..declare import DeclareConstraint, DeclareTemplate, DataConjunct, DataCondition
 
 RUM_JAR = Path(__file__).parent / "rum-0.7.2.jar"
 
@@ -257,3 +257,98 @@ def mpdeclare_to_declare_constraints(
         print(f"[mpdeclare_to_declare] Skipped {len(skipped_activities)} unknown activity(ies): {skipped_activities}")
 
     return constraints, data_conditions
+
+
+# =============================================================================
+# Data-condition string parser
+# =============================================================================
+
+# Features that are event-log metadata and cannot be checked against encoded tensors.
+_DEFAULT_SKIP_FEATURES = frozenset({
+    "EventID", "OfferID", "@@case_index", "@@index",
+    "Case ID", "Complete Timestamp", "Variant", "Variant.1",
+    "time:timestamp", "case:concept:name", "concept:name",
+})
+
+
+def parse_data_condition_string(
+    raw: str,
+    cat_feature_names: List[str],
+    cat_label_to_idx: Dict[str, Dict],
+    skip_features: Optional[Set[str]] = None,
+) -> Optional[DataCondition]:
+    """Parse a RuM MP-Declare data-condition string into a :class:`DataCondition`.
+
+    Args:
+        raw: The raw string, e.g.
+            ``'| (EventOrigin is Offer) ∧ (Action is Created) | fulfillment is true'``
+        cat_feature_names: Ordered list of categorical feature names matching
+            the tensor indices (from ``TensorDecoder.cat_features``).
+        cat_label_to_idx: ``{feature_name: {label_string: encoded_int}}``
+            (from ``TensorDecoder.label_to_idx``).
+        skip_features: Feature names to ignore (event-log metadata).  Defaults
+            to a built-in set of common PM metadata fields.
+
+    Returns:
+        A :class:`DataCondition` with all resolvable conjuncts, or ``None`` if
+        no conjuncts could be resolved.
+    """
+    skip = skip_features if skip_features is not None else _DEFAULT_SKIP_FEATURES
+
+    # Strip outer wrapper: "| ... | fulfillment is true"
+    body = raw.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    # Remove trailing "| fulfillment is true" (or similar)
+    if "| fulfillment" in body:
+        body = body[:body.index("| fulfillment")]
+    body = body.strip()
+
+    if not body:
+        return None
+
+    # Build feature-name → index lookup
+    cat_name_to_idx = {name: i for i, name in enumerate(cat_feature_names)}
+
+    conjuncts: List[DataConjunct] = []
+    parts = body.split("∧")
+    for part in parts:
+        part = part.strip().strip("()")
+        if not part:
+            continue
+
+        # Parse "FeatureName is Value" or "FeatureName = Value"
+        feat_name = value_str = None
+        if " is " in part:
+            feat_name, value_str = part.split(" is ", 1)
+        elif " = " in part:
+            feat_name, value_str = part.split(" = ", 1)
+        else:
+            continue
+
+        feat_name = feat_name.strip()
+        value_str = value_str.strip()
+
+        if feat_name in skip:
+            continue
+
+        # Resolve categorical feature
+        if feat_name not in cat_name_to_idx:
+            continue
+        feat_idx = cat_name_to_idx[feat_name]
+
+        # Resolve value
+        label_map = cat_label_to_idx.get(feat_name, {})
+        if value_str not in label_map:
+            continue
+        value_idx = label_map[value_str]
+
+        conjuncts.append(DataConjunct(
+            feature_name=feat_name,
+            feature_idx=feat_idx,
+            value_idx=value_idx,
+        ))
+
+    if not conjuncts:
+        return None
+    return DataCondition(conjuncts=tuple(conjuncts), raw_string=raw)

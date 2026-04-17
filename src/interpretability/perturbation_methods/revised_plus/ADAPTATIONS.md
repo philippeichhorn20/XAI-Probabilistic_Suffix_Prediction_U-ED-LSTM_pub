@@ -6,6 +6,9 @@
 
 ## 1. Declare constraints:
 
+
+## Removed declaure constraints from training as it makes it much more computational expensive whil providing little beneift since it is not differenciable and the constraaints are learned anyway
+
 ### Declare -> MP-Declare
 
 As our model does not just focus on activities, the simple declare trace conditions do not suffice for our use case.

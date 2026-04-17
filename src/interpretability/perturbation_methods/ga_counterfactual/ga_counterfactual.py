@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, Any
 
 from ..revised_plus.revised_plus import RevisedPlusModelPredictor
-from ..declare import DeclareConstraint, DeclareConstraintChecker
+from ..declare import DeclareConstraint, DeclareConstraintChecker, DataCondition
 from ..base import compute_sparsity_l0
 
 
@@ -191,6 +191,7 @@ class GACounterfactual:
         cat_vocab_sizes: List[int],
         mutable_cat_indices: List[int],
         config: GACounterfactualConfig,
+        data_conditions: Optional[Dict[DeclareConstraint, DataCondition]] = None,
     ):
         self.predictor = predictor
         self.activity_names = activity_names
@@ -200,6 +201,7 @@ class GACounterfactual:
         )
         self.training_sequences = training_sequences
         self.config = config
+        self.data_conditions = data_conditions or {}
 
         # Mutable feature info
         self.mutable_cat_indices = mutable_cat_indices
@@ -275,9 +277,13 @@ class GACounterfactual:
                   f"prefix_len={prefix_len}, mutable={mut_names}")
 
         # --- Precompute which constraints the original activity seq satisfies ---
+        n_total_cat = len(cat_tensors)
+        original_cat_data = self._build_cat_data(
+            original, frozen_cat, pad_len, prefix_len, n_total_cat)
         original_satisfied = {
             c for c in self.prefix_safe_constraints
-            if DeclareConstraintChecker.check(original_acts, c)
+            if DeclareConstraintChecker.check_with_data(
+                original_acts, c, self.data_conditions.get(c), original_cat_data)
         }
 
         # --- GA loop ---
@@ -289,7 +295,7 @@ class GACounterfactual:
             fitness_scores, gen_results = self._evaluate_fitness(
                 population, original, frozen_cat, frozen_num,
                 seq_len, pad_len, orig_pred, target_class_resolved, gen,
-                len(cat_tensors),
+                n_total_cat,
             )
             n_evaluated += len(population)
 
@@ -319,11 +325,15 @@ class GACounterfactual:
                 p_b = self._select_parent(population, fitness_scores)
 
                 if random.random() < cfg.crossover_rate:
-                    child = self._crossover(p_a, p_b, original, original_satisfied)
+                    child = self._crossover(
+                        p_a, p_b, original, original_satisfied,
+                        frozen_cat, pad_len, prefix_len, n_total_cat)
                 else:
                     child = _clone_individual(p_a)
 
-                child = self._mutate(child, original, original_satisfied)
+                child = self._mutate(
+                    child, original, original_satisfied,
+                    frozen_cat, pad_len, prefix_len, n_total_cat)
                 new_population.append(child)
 
             population = new_population[:cfg.population_size]
@@ -345,6 +355,28 @@ class GACounterfactual:
             n_constraints=len(self.prefix_safe_constraints),
             mutable_cat_indices=self.mutable_cat_indices,
         )
+
+    # =========================================================================
+    # Multi-channel data for MP-Declare data conditions
+    # =========================================================================
+
+    def _build_cat_data(
+        self,
+        individual: Individual,
+        frozen_cat: Dict[int, Any],
+        pad_len: int,
+        prefix_len: int,
+        n_total_cat: int,
+    ) -> Dict[int, List[int]]:
+        """Build ``{cat_feature_idx: [value_at_pos_0, …]}`` for constraint checking."""
+        cat_data: Dict[int, List[int]] = {}
+        for ch_pos, ci in enumerate(self.mutable_cat_indices):
+            cat_data[ci] = list(individual[ch_pos])
+        for ci in range(n_total_cat):
+            if ci not in cat_data and ci in frozen_cat:
+                t = frozen_cat[ci]
+                cat_data[ci] = [int(t[pad_len + p].item()) for p in range(prefix_len)]
+        return cat_data
 
     # =========================================================================
     # Case-Level Enforcement
@@ -491,10 +523,17 @@ class GACounterfactual:
             # o4: plausibility — min distance to training sequences (activity channel only)
             o4 = self._compute_plausibility(ind_acts)
 
-            # o5: conformance (activity channel only)
-            o5 = 1.0 - DeclareConstraintChecker.satisfaction_rate(
-                ind_acts, list(self.prefix_safe_constraints)
-            )
+            # o5: conformance (activity channel + data conditions)
+            if self.data_conditions:
+                ind_cat_data = self._build_cat_data(
+                    ind, frozen_cat, pad_len, prefix_len, n_total_cat)
+                o5 = 1.0 - DeclareConstraintChecker.satisfaction_rate_with_data(
+                    ind_acts, list(self.prefix_safe_constraints),
+                    self.data_conditions, ind_cat_data)
+            else:
+                o5 = 1.0 - DeclareConstraintChecker.satisfaction_rate(
+                    ind_acts, list(self.prefix_safe_constraints)
+                )
 
             fitness = (
                 cfg.w_validity * o1
@@ -577,10 +616,14 @@ class GACounterfactual:
         parent_b: Individual,
         original: Individual,
         original_satisfied: Set[DeclareConstraint],
+        frozen_cat: Optional[Dict] = None,
+        pad_len: int = 0,
+        prefix_len: int = 0,
+        n_total_cat: int = 0,
     ) -> Individual:
         """Single-point crossover on all channels with activity constraint repair."""
-        prefix_len = len(parent_a[0])
-        point = random.randint(1, prefix_len - 1)
+        plen = len(parent_a[0])
+        point = random.randint(1, plen - 1)
 
         child: Individual = []
         for ch in range(len(self.mutable_cat_indices)):
@@ -591,10 +634,11 @@ class GACounterfactual:
             else:
                 child.append(parent_a[ch][:point] + parent_b[ch][point:])
 
-        # Repair activity channel only
+        # Repair activity channel (with data conditions if available)
         act_ch = self.activity_channel
         child[act_ch] = self._constraint_repair(
             child[act_ch], original[act_ch], original_satisfied,
+            child, frozen_cat, pad_len, prefix_len or plen, n_total_cat,
         )
         return child
 
@@ -607,11 +651,15 @@ class GACounterfactual:
         individual: Individual,
         original: Individual,
         original_satisfied: Set[DeclareConstraint],
+        frozen_cat: Optional[Dict] = None,
+        pad_len: int = 0,
+        prefix_len: int = 0,
+        n_total_cat: int = 0,
     ) -> Individual:
         """Per-position mutation on all channels with activity constraint repair."""
-        prefix_len = len(individual[0])
+        plen = len(individual[0])
         n_channels = len(self.mutable_cat_indices)
-        mutation_prob = self.config.mutation_rate / prefix_len
+        mutation_prob = self.config.mutation_rate / plen
 
         mutated = _clone_individual(individual)
         for ch in range(n_channels):
@@ -620,16 +668,17 @@ class GACounterfactual:
                 # Case-level: single coin flip to mutate all positions uniformly
                 if random.random() < self.config.mutation_rate:
                     val = random.choice(self.valid_values[ci])
-                    mutated[ch] = [val] * prefix_len
+                    mutated[ch] = [val] * plen
             else:
-                for pos in range(prefix_len):
+                for pos in range(plen):
                     if random.random() < mutation_prob:
                         mutated[ch][pos] = random.choice(self.valid_values[ci])
 
-        # Repair activity channel only
+        # Repair activity channel (with data conditions if available)
         act_ch = self.activity_channel
         mutated[act_ch] = self._constraint_repair(
             mutated[act_ch], original[act_ch], original_satisfied,
+            mutated, frozen_cat, pad_len, prefix_len or plen, n_total_cat,
         )
         return mutated
 
@@ -642,21 +691,44 @@ class GACounterfactual:
         act_seq: List[int],
         original_acts: List[int],
         original_satisfied: Set[DeclareConstraint],
+        individual: Optional[Individual] = None,
+        frozen_cat: Optional[Dict] = None,
+        pad_len: int = 0,
+        prefix_len: int = 0,
+        n_total_cat: int = 0,
     ) -> List[int]:
         """
         Revert activity positions that cause new constraint violations.
 
         For each constraint the original satisfied: if violated by act_seq,
         greedily revert changed positions until the constraint is satisfied again.
+        Uses MP-Declare data conditions when available.
         """
+        use_data = bool(self.data_conditions and individual is not None
+                        and frozen_cat is not None and n_total_cat > 0)
+
         for c in original_satisfied:
-            if DeclareConstraintChecker.check(act_seq, c):
-                continue
+            dc = self.data_conditions.get(c) if use_data else None
+            if use_data and dc is not None:
+                cat_data = self._build_cat_data(
+                    individual, frozen_cat, pad_len, prefix_len, n_total_cat)
+                if DeclareConstraintChecker.check_with_data(act_seq, c, dc, cat_data):
+                    continue
+            else:
+                if DeclareConstraintChecker.check(act_seq, c):
+                    continue
+
             for pos in range(len(original_acts)):
                 if act_seq[pos] != original_acts[pos]:
                     act_seq[pos] = original_acts[pos]
-                    if DeclareConstraintChecker.check(act_seq, c):
-                        break
+                    if use_data and dc is not None:
+                        cat_data = self._build_cat_data(
+                            individual, frozen_cat, pad_len, prefix_len, n_total_cat)
+                        if DeclareConstraintChecker.check_with_data(act_seq, c, dc, cat_data):
+                            break
+                    else:
+                        if DeclareConstraintChecker.check(act_seq, c):
+                            break
         return act_seq
 
     # =========================================================================
@@ -718,6 +790,7 @@ def create_ga_counterfactual_for_model(
     config: GACounterfactualConfig,
     constraints: Set[DeclareConstraint] = None,
     cat_feature_names: Optional[List[str]] = None,
+    data_conditions: Optional[Dict[DeclareConstraint, DataCondition]] = None,
 ) -> GACounterfactual:
     """
     Convenience factory: create GACounterfactual from a model and dataset.
@@ -729,6 +802,8 @@ def create_ga_counterfactual_for_model(
         config: Configuration for the GA.
         constraints: Pre-mined Declare constraints. Empty set if None.
         cat_feature_names: Optional list of categorical feature names (for logging).
+        data_conditions: Optional MP-Declare data conditions mapping constraints
+            to parsed :class:`DataCondition` objects.
 
     Returns:
         Configured GACounterfactual instance ready for explain().
@@ -783,4 +858,5 @@ def create_ga_counterfactual_for_model(
         cat_vocab_sizes=cat_vocab_sizes,
         mutable_cat_indices=mutable,
         config=config,
+        data_conditions=data_conditions,
     )

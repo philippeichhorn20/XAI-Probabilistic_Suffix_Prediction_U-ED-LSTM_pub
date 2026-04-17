@@ -211,7 +211,24 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,jupyternotebooks
 
-# Large data files (download via real_data_loader.sh)
-data/BPI_Challenge_2017.xes
-data/BPI_Challenge_2017.csv
-data/DomesticDeclarations.xes
+# Node modules
+node_modules/
+
+
+CLAUDE.md
+src/interpretability/interactive_tool/frontend/package-lock.json
+
+
+# documents
+*.pdf
+
+# datasets / logs
+*.xes
+*.csv
+.gitignore
+*.jar
+data/domestic_declarations.csv
+src/interpretability/perturbation_methods/revised_plus/ADAPTATIONS.md
+src/aa_philipp/.DS_Store
+Pipfile.lock
+.gitignore
