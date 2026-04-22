@@ -147,12 +147,39 @@ class C45Classifier:
         indices = np.arange(len(X))
         self.root_ = self._build_tree(X, y, indices, depth=0)
 
+        # Collapse subtrees whose leaves all predict the same class
+        # (same-prediction pruning; fidelity is unchanged).
+        self._collapse_same_prediction(self.root_)
+
         del self._col_arrays, self._cat_encodings, self._y_codes, self._y_uniques
 
-        # Compute feature importances
+        # Compute feature importances after pruning so collapsed splits
+        # don't contribute importance.
         self._compute_feature_importances(X, y)
 
         return self
+
+    def _collapse_same_prediction(self, node: 'C45Node') -> Optional[str]:
+        """Recursively collapse subtrees where every leaf predicts the same class.
+
+        Returns the shared majority class of the subtree, or None if descendants
+        disagree (in which case the subtree is left untouched).
+        """
+        if not node.children:
+            return node.majority_class
+
+        child_preds = [self._collapse_same_prediction(c) for c in node.children]
+        if any(p is None for p in child_preds) or len(set(child_preds)) > 1:
+            return None
+
+        # All descendants predict the same class — replace subtree with a leaf.
+        node.feature = None
+        node.is_categorical = False
+        node.threshold = None
+        node.category_map = None
+        node.branch_labels = None
+        node.children = []
+        return node.majority_class
 
     # =================================================================
     # Tree Building
