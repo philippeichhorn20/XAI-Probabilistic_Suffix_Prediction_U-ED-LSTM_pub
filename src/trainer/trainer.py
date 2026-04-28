@@ -5,6 +5,7 @@ Uses gradient normalization (GradNorm) technique to balance task losses dynamica
 - Chen Z. et.al, GradNorm: "Gradient Normalization for Adaptive Loss Balancing in Deep Multitask Networks", ICML, 2018.
 """
 
+import os
 import torch
 from torch.utils.data import DataLoader
 from tqdm.notebook import tqdm
@@ -317,9 +318,10 @@ class Trainer:
             # Adjust learning rate
             self.scheduler.step(epoch_loss_val_std)
 
-            if (i+1) % self.save_model_n_th_epoch == 0:
-                 tqdm.write("saving model")
-                 self.model.save(self.saving_path)
+            if self.save_model_n_th_epoch and (epoch + 1) % self.save_model_n_th_epoch == 0:
+                # Overwrite the same file every epoch (no per-epoch numbered checkpoints)
+                tqdm.write(f"saving model to {self.saving_path}")
+                self.model.save(self.saving_path)
                                  
         print("Training complete.")
 

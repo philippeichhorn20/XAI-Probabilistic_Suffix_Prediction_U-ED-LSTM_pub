@@ -68,6 +68,8 @@ class DatasetSpec:
     cat_indices: Tuple[int, int]    # (activity, resource) positions in henryk dataset cats
     num_indices: Tuple[int, ...]    # (case_elapsed_time,) position in nums
     activity_feature: str           # 'Activity' / 'concept:name'
+    model_class: str = "FullShared_Join_LSTM"   # or "SharedCat_LSTM"
+    ngram_size: int = 0             # >0 = Camargo n-gram window (paper §3.1); 0 = legacy compute_window
 
 
 HELPDESK = DatasetSpec(
@@ -84,6 +86,36 @@ HELPDESK = DatasetSpec(
     activity_feature="Activity",
 )
 
+HELPDESK_SHAREDCAT_ROLES = DatasetSpec(
+    name="Helpdesk (SharedCat + Roles)",
+    test_pickle="encoded_data/compare_camargo/helpdesk_all_5_roles_test.pkl",
+    model_pickle=(
+        "src/reimplemented_comparable_approaches/camargo_LSTM_suffix_pred/"
+        "notebooks/training/Helpdesk/Helpdesk_camargo_sharedcat_roles_act_1_suffix_length5.pkl"
+    ),
+    cat_indices=(0, 1),   # Activity, Role
+    num_indices=(0,),
+    activity_feature="Activity",
+    model_class="SharedCat_LSTM",
+)
+
+
+# Paper-faithful variant: per-time-step n-gram loader (Camargo §3.1), ngram_size=5 per Table 3.
+HELPDESK_SHAREDCAT_ROLES_NGRAM = DatasetSpec(
+    name="Helpdesk",
+    test_pickle="encoded_data/compare_camargo/helpdesk_all_5_roles_test.pkl",
+    model_pickle=(
+        "src/reimplemented_comparable_approaches/camargo_LSTM_suffix_pred/"
+        "notebooks/training/Helpdesk/Helpdesk_camargo_sharedcat_roles_ngram5.pkl"
+    ),
+    cat_indices=(0, 1),
+    num_indices=(0,),
+    activity_feature="Activity",
+    model_class="SharedCat_LSTM",
+    ngram_size=5,
+)
+
+
 BPIC17 = DatasetSpec(
     name="BPIC17",
     test_pickle="encoded_data/BPIC_2017_all_5_test.pkl",
@@ -97,10 +129,30 @@ BPIC17 = DatasetSpec(
 )
 
 
+# Paper-faithful variant: per-time-step n-gram loader. ngram_size=15 chosen by
+# analogy with BPI 2012 in Camargo Table 3 (similar complexity; no BPIC17 row).
+BPIC17_NGRAM = DatasetSpec(
+    name="BPIC17 (n-gram=15)",
+    test_pickle="encoded_data/BPIC_2017_all_5_test.pkl",
+    model_pickle=(
+        "src/reimplemented_comparable_approaches/camargo_LSTM_suffix_pred/"
+        "notebooks/training/BPIC17/BPIC17_camargo_ngram15.pkl"
+    ),
+    cat_indices=(0, 2),
+    num_indices=(0,),
+    activity_feature="concept:name",
+    ngram_size=15,
+)
+
+
 def load_camargo_model(project_root: Path, spec: DatasetSpec):
     _ensure_on_path(project_root)
-    from joinLSTM.model import FullShared_Join_LSTM  # type: ignore
-    model = FullShared_Join_LSTM.load(str(project_root / spec.model_pickle))
+    if spec.model_class == "SharedCat_LSTM":
+        from sharedCatLSTM.model import SharedCat_LSTM  # type: ignore
+        model = SharedCat_LSTM.load(str(project_root / spec.model_pickle))
+    else:
+        from joinLSTM.model import FullShared_Join_LSTM  # type: ignore
+        model = FullShared_Join_LSTM.load(str(project_root / spec.model_pickle))
     model.eval()
     return model
 
@@ -132,20 +184,25 @@ def make_prefix_window(cats_full: Sequence[torch.Tensor],
                        prefix_length: int,
                        window: int,
                        spec: DatasetSpec) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
-    """Build pad-left window tensors with the first `prefix_length` real events
-    of a trace (starting at `start`) right-aligned in a window of length `window`.
+    """Build pad-left window tensors with the last `min(prefix_length, window)`
+    real events of a trace (starting at `start`) right-aligned in a window of
+    length `window`. When prefix_length > window, the oldest events are dropped
+    — same truncation rule the Camargo n-gram trainer applies.
 
     Returns batched tensors of shape [1, window] each.
     """
     cats_sub, nums_sub = project_features(cats_full, nums_full, spec)
     cats_out = [torch.zeros((1, window), dtype=c.dtype) for c in cats_sub]
     nums_out = [torch.zeros((1, window), dtype=n.dtype) for n in nums_sub]
-    for k in range(prefix_length):
-        dst = window - prefix_length + k
+    effective = min(prefix_length, window)
+    src_offset = prefix_length - effective  # skip oldest events when history exceeds window
+    for k in range(effective):
+        dst = window - effective + k
+        src = start + src_offset + k
         for j in range(len(cats_sub)):
-            cats_out[j][0, dst] = cats_sub[j][start + k]
+            cats_out[j][0, dst] = cats_sub[j][src]
         for j in range(len(nums_sub)):
-            nums_out[j][0, dst] = nums_sub[j][start + k]
+            nums_out[j][0, dst] = nums_sub[j][src]
     return cats_out, nums_out
 
 
@@ -164,8 +221,8 @@ class CamargoPredictor:
                              cats: Sequence[torch.Tensor],
                              nums: Sequence[torch.Tensor]) -> torch.Tensor:
         """cats/nums: lists of [B, window] tensors. Returns [B, n_classes] softmax."""
-        probs = self.model((list(cats), list(nums)))
-        return probs
+        logits = self.model((list(cats), list(nums)))
+        return torch.nn.functional.softmax(logits, dim=-1)
 
     @torch.no_grad()
     def predict_batch(self,
@@ -178,10 +235,14 @@ class CamargoPredictor:
 
 def iter_case_prefixes(cats_full: Sequence[torch.Tensor],
                        acts_tensor_idx: int,
-                       eos_idx: int) -> Iterator[Tuple[int, int, int]]:
+                       eos_idx: int,
+                       include_end: bool = False) -> Iterator[Tuple[int, int, int]]:
     """Yield (prefix_length, start, useful_len) for each position in a case with
     a real next activity to predict. `start` is the index of the first real
-    event; `useful_len` is the number of real non-EOS events in the case."""
+    event; `useful_len` is the number of real non-EOS events in the case.
+
+    With include_end=True, also yields the prefix that ends at the last real
+    activity (next event is EOS) so case-end transitions are captured."""
     acts = cats_full[acts_tensor_idx].tolist()
     # find first non-padding (idx 0 is padding) and the trailing real (non-EOS) run
     nonzero = [i for i, a in enumerate(acts) if a != 0]
@@ -192,18 +253,23 @@ def iter_case_prefixes(cats_full: Sequence[torch.Tensor],
     # strip trailing EOS
     while useful_len > 0 and acts[start + useful_len - 1] == eos_idx:
         useful_len -= 1
-    for k in range(useful_len - 1):
+    upper = useful_len if include_end else useful_len - 1
+    for k in range(upper):
         prefix_length = k + 1
         yield prefix_length, start, useful_len
 
 
 def collect_prefix_predictions(predictor: CamargoPredictor,
                                dataset,
-                               progress: bool = True) -> List[dict]:
+                               progress: bool = True,
+                               include_end: bool = False) -> List[dict]:
     """Collect one record per (case, prefix_length) with actual/predicted/probs.
 
     Records: {case_id, prefix_length, current_activity, actual_next_activity,
               predicted_next_activity, confidence, correct}
+
+    With include_end=True, also records (last_real_activity -> EOS) so case-end
+    predictions show up downstream (process map, surrogate gateway data, etc.).
     """
     model_act_idx = 0  # Camargo activity is always cat[0] after projection
     eos_idx = predictor.eos_idx
@@ -232,7 +298,8 @@ def collect_prefix_predictions(predictor: CamargoPredictor,
         acts_list = cats_proj[0].tolist()
 
         for prefix_length, start, useful_len in iter_case_prefixes(
-            [cats_proj[0]], acts_tensor_idx=0, eos_idx=eos_idx
+            [cats_proj[0]], acts_tensor_idx=0, eos_idx=eos_idx,
+            include_end=include_end,
         ):
             # Build prefix window
             cats_win, nums_win = make_prefix_window(
@@ -280,19 +347,35 @@ def compute_window(dataset) -> int:
 def _forward_from_embeddings(model, embedded_cats: torch.Tensor, nums_stacked: torch.Tensor) -> torch.Tensor:
     """Run the Camargo model starting from already-embedded continuous inputs.
 
+    Two architectures are supported:
+      - Join LSTM (BPIC17 default): shared_lstm takes [cats | nums]; head takes y.
+      - SharedCat LSTM (Helpdesk SharedCat-Roles): shared_lstm takes cats only;
+        nums are concatenated into the head input.
+
+    The two are distinguished by shared_lstm.input_size: if it equals the cat-
+    embedding dim, this is the cat-only variant.
+
     Args:
         embedded_cats: [B, T, cat_embed_total] concatenated embeddings for cat features.
         nums_stacked:  [B, T, n_num] stacked numerical inputs.
 
     Returns softmax probabilities [B, n_classes].
     """
-    if nums_stacked.shape[-1] > 0:
-        x = torch.cat([embedded_cats, nums_stacked], dim=-1)  # [B, T, input_size]
+    cat_only_shared = model.shared_lstm.input_size == embedded_cats.shape[-1]
+    has_nums = nums_stacked.shape[-1] > 0
+
+    if cat_only_shared:
+        shared_in = embedded_cats
     else:
-        x = embedded_cats
-    out_seq, _ = model.shared_lstm(x)  # [B, T, H]
+        shared_in = torch.cat([embedded_cats, nums_stacked], dim=-1) if has_nums else embedded_cats
+
+    out_seq, _ = model.shared_lstm(shared_in)  # [B, T, H]
     y = model.bn1(out_seq.transpose(1, 2)).transpose(1, 2)  # [B, T, H]
-    _, (h_act, _) = model.lstm_act(y)
+
+    # SharedCat injects nums at the head; Join LSTM does not.
+    head_in = torch.cat([y, nums_stacked], dim=-1) if (cat_only_shared and has_nums) else y
+
+    _, (h_act, _) = model.lstm_act(head_in)
     a_logits = model.act_head(h_act.squeeze(0))
     return torch.nn.functional.softmax(a_logits, dim=-1)
 

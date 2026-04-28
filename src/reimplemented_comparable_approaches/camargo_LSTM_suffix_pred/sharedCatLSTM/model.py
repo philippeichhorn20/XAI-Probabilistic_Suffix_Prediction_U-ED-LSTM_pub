@@ -8,8 +8,9 @@ head — Table 3 of the paper shows this is the best-performing variant on Helpd
 (DL act sim 0.9568 vs 0.5773 for the full-shared variant).
 
 Input/output interface matches `FullShared_Join_LSTM`:
-    forward(input=(cats, nums)) -> softmax probs [B, n_activity_classes]
+    forward(input=(cats, nums)) -> raw logits [B, n_activity_classes]
     model((cats, nums))  # cats: list of [B, T] int tensors, nums: list of [B, T] float tensors
+Apply `F.softmax` at call sites that need a probability distribution.
 """
 import torch
 import torch.nn as nn
@@ -122,9 +123,10 @@ class SharedCat_LSTM(nn.Module):
         _, (h_act, _) = self.lstm_act(head_input)  # h_act: [1, B, H]
         h_act = h_act.squeeze(0)  # [B, H]
 
+        # Return raw logits so F.cross_entropy can do log_softmax internally.
+        # Callers that need a probability distribution must apply F.softmax themselves.
         a_logits = self.act_head(h_act)
-        a_probs = F.softmax(a_logits, dim=-1)
-        return a_probs
+        return a_logits
 
     def save(self, path: str):
         checkpoint = {

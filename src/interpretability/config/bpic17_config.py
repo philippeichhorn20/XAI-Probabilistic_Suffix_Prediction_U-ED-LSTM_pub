@@ -16,7 +16,8 @@ CONFIG = BaseConfig(
     growing_num_values=["case_elapsed_time"],
 
     # Paths (relative to project root)
-    model_path="src/notebooks/training_variational_dropout/BPIC17/BPIC_2017_full_grad_norm_new_4layer.pkl",
+    
+    model_path="src/interpretability/improved_pipeline/henryk/bpic17/old/Training/BPIC_2017_remote_run_20260425_145308_epoch100.pkl",
     test_data_path="encoded_data/BPIC_2017_all_5_test.pkl",
     results_dir="src/interpretability/notebooks/results",
 

@@ -127,10 +127,6 @@ class ProcessPerformanceMap:
         self.activity_key = activity_key
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
 
-        # Extract feature info from model
-        self.data_set_categories = model.data_set_categories
-        self._extract_feature_info()
-
         # Storage for predictions and performance
         self.predictions: List[PredictionRecord] = []
         self.transition_performance: Dict[Tuple[str, str], TransitionPerformance] = {}
@@ -139,6 +135,10 @@ class ProcessPerformanceMap:
         # Process map data
         self.event_log: Optional[EventLog] = None
         self.dfg: Optional[Dict] = None
+
+        # Extract feature info from model (must come after activity_labels init)
+        self.data_set_categories = model.data_set_categories
+        self._extract_feature_info()
 
     def _extract_feature_info(self):
         """Extract feature information from model."""
@@ -219,7 +219,7 @@ class ProcessPerformanceMap:
     def _collect_case_predictions(self, case_name: str, case_data) -> None:
         """Collect predictions for all prefixes of a single case."""
 
-        for prefix_len, prefix, suffix in self.eval_helper._iterate_case(case_data):
+        for prefix_len, prefix, suffix in self.eval_helper._iterate_case(case_data, include_end=True):
             # Skip if no suffix (nothing to predict)
             if suffix is None:
                 continue
@@ -541,9 +541,12 @@ class ProcessPerformanceMap:
             for activity, count in start_activities.items():
                 if count >= min_edge_count:
                     dot.edge('__START__', activity, label=str(count),
-                            color='#888888', penwidth=str(1 + np.log1p(count)))
+                            color='#888888', penwidth=str(1 + np.log1p(count)),
+                            weight=str(int(np.log1p(count) * 10)))
 
-        # Add edges with performance coloring
+        # Add edges with performance coloring. Edge weight = log(count) so dot's
+        # ranker pulls the heaviest path into a straight horizontal trunk; self-
+        # loops use constraint=false so they don't shift ranks.
         for (src, tgt), dfg_count in self.dfg.items():
             if dfg_count < min_edge_count:
                 continue
@@ -567,7 +570,13 @@ class ProcessPerformanceMap:
                 label = f'0/{dfg_count}'
                 penwidth = '1'
 
-            dot.edge(src, tgt, label=label, color=color, penwidth=penwidth)
+            edge_kwargs = {
+                'label': label, 'color': color, 'penwidth': penwidth,
+                'weight': str(int(np.log1p(dfg_count) * 10)),
+            }
+            if src == tgt:
+                edge_kwargs['constraint'] = 'false'
+            dot.edge(src, tgt, **edge_kwargs)
 
         # Add legend
         with dot.subgraph(name='cluster_legend') as legend:

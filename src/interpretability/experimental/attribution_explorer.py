@@ -28,9 +28,14 @@ from typing import Optional, Tuple, List, Dict
 import warnings
 warnings.filterwarnings('ignore')
 
-# Add parent directories to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directories to path (need src/ on sys.path for `model.*` and `interpretability.*` imports below)
+_HERE = os.path.dirname(os.path.abspath(__file__))                              # src/interpretability/experimental
+_INTERP = os.path.dirname(_HERE)                                                # src/interpretability
+_SRC = os.path.dirname(_INTERP)                                                 # src
+_ROOT = os.path.dirname(_SRC)                                                   # project root
+for p in (_HERE, _INTERP, _SRC, _ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 try:
     import gradio as gr

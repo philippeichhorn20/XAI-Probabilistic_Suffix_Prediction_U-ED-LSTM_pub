@@ -122,13 +122,11 @@ class FullShared_Join_LSTM(nn.Module):
         # print(h_act.shape)
         h_act  = h_act.squeeze(0) # (B, hidden_size)
 
-        # Final heads & activations
+        # Final head — return raw logits so F.cross_entropy can do log_softmax internally.
+        # Callers that need a probability distribution must apply F.softmax themselves.
         a_logits = self.act_head(h_act) # (B, output_size_act)
 
-        # Transform logits into probabilities
-        a_probs = F.softmax(a_logits, dim=-1)
-        
-        return a_probs    
+        return a_logits
     
     def save(self, path : str):
         """

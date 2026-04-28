@@ -78,8 +78,16 @@ class Evaluation:
         return cases
 
     def _iterate_case(
-        self, case: tuple[list[torch.Tensor], list[torch.Tensor]]
+        self, case: tuple[list[torch.Tensor], list[torch.Tensor]],
+        include_end: bool = False,
     ) -> Iterator[tuple]:
+        """Iterate growing prefixes of a case.
+
+        With include_end=True, also yields the prefix that ends at the last
+        real activity — the suffix at that step starts with EOS. Default
+        keeps the original behaviour (suffix prediction reserves min_suffix
+        EOS slots in the suffix tensor).
+        """
         current_prefix = (
             [torch.zeros_like(cat_attribute).unsqueeze(0) for cat_attribute in case[0]],
             [torch.zeros_like(num_attribute).unsqueeze(0) for num_attribute in case[1]],
@@ -90,9 +98,10 @@ class Evaluation:
             [torch.clone(num_attribute).unsqueeze(0) for num_attribute in case[1]],
         )
 
+        end_offset = 0 if include_end else 1
         prefix_length = 0
         for i in range(
-            case[0][0].shape[0] - self.dataset.encoder_decoder.min_suffix_size - 1
+            case[0][0].shape[0] - self.dataset.encoder_decoder.min_suffix_size - end_offset
         ):
             for j in range(len(current_prefix[0])):
                 current_prefix[0][j][0] = torch.roll(current_prefix[0][j][0], -1)

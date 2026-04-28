@@ -14,7 +14,7 @@ CONFIG = BaseConfig(
     growing_num_values=["case_elapsed_time"],
 
     # Paths (relative to project root)
-    model_path="src/notebooks/training_variational_dropout/DomesticDeclarations/DomesticDeclarations_full_grad_norm_4layer.pkl",
+    model_path="src/notebooks/training_variational_dropout/DomesticDeclarations/DomesticDeclarations_full_grad_norm_4layer_philipp_unchanged.pkl",
     test_data_path="encoded_data/test_philipp/domestic_declarations_all_5_test.pkl",
     results_dir="src/interpretability/notebooks/results",
 

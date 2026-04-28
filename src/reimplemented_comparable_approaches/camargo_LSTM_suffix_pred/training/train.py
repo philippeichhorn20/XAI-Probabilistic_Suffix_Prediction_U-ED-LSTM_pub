@@ -135,13 +135,12 @@ class Training:
                 if V == 0:
                     continue
                 
-                # Forward pass: Output dim:  a_probs: batch x activity classes
-                a_probs = self.model(prefixes)
-                
-                # Compute losses
-                # Activity: cross-entropy
+                # Forward pass returns raw logits [B, n_activity_classes]
+                a_logits = self.model(prefixes)
+
+                # Compute losses — F.cross_entropy applies log_softmax internally.
                 target_act = torch.stack(acts, dim=0).squeeze(1).long() # (B,)
-                act_loss = F.cross_entropy(a_probs, target_act)
+                act_loss = F.cross_entropy(a_logits, target_act)
 
                 loss = act_loss
 
@@ -221,10 +220,10 @@ class Training:
                 if V == 0:
                     continue
 
-                a_probs = self.model(input=prefixes)
+                a_logits = self.model(input=prefixes)
 
                 target_act = torch.stack(acts, dim=0).squeeze(1).long() # (B,)
-                act_loss = F.cross_entropy(a_probs, target_act)
+                act_loss = F.cross_entropy(a_logits, target_act)
 
                 total_loss += act_loss.item()
                 num_batches += 1
