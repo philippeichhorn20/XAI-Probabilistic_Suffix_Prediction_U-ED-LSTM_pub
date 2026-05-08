@@ -42,6 +42,7 @@ from src.interpretability.utils.tensor_decoder import TensorDecoder
 from src.interpretability.perturbation_methods.revised_plus.revised_plus import (
     RevisedPlusModelPredictor,
 )
+from src.interpretability.interactive_tool.predictor_camargo import CamargoModelPredictor
 from src.interpretability.interactive_tool.dfg_analyzer import DFGAnalyzer
 
 # Load dagre layout extension
@@ -73,9 +74,20 @@ def _load_model_cache(model_name):
         csv_case_col=config.csv_case_col,
     )
     dfg_result = analyzer.build_dfg()
-    predictor = RevisedPlusModelPredictor(
-        model, suffix_step=0, activity_feature=config.concept_name,
-    )
+    cls = getattr(config, "model_class", "henryk_uedlstm")
+    if cls == "henryk_uedlstm":
+        predictor = RevisedPlusModelPredictor(
+            model, suffix_step=0, activity_feature=config.concept_name,
+        )
+    elif cls in ("camargo_join", "camargo_sharedcat"):
+        predictor = CamargoModelPredictor(
+            model,
+            cat_indices=config.cat_indices or (0, 1),
+            num_indices=config.num_indices or (0,),
+            ngram_size=config.ngram_size,
+        )
+    else:
+        raise ValueError(f"Unknown model_class '{cls}' for model '{model_name}'")
     entry = {
         'model': model,
         'dataset': dataset,
@@ -439,6 +451,19 @@ def create_heatmap(df_sweep, feature_idx, feature_name, is_case_level, branches,
 
 
 # ============================================================
+# Edge-cases modal styling (overlay popup shown on edge click)
+# ============================================================
+
+_MODAL_BACKDROP_BASE = {
+    'position': 'fixed', 'top': 0, 'left': 0, 'right': 0, 'bottom': 0,
+    'backgroundColor': 'rgba(0,0,0,0.5)', 'zIndex': 1000,
+    'alignItems': 'center', 'justifyContent': 'center',
+}
+MODAL_HIDDEN = {**_MODAL_BACKDROP_BASE, 'display': 'none'}
+MODAL_VISIBLE = {**_MODAL_BACKDROP_BASE, 'display': 'flex'}
+
+
+# ============================================================
 # Dash App
 # ============================================================
 
@@ -535,6 +560,38 @@ app.layout = html.Div([
         id='loading-analysis',
         type='default',
         children=[html.Div(id='analysis-results')],
+    ),
+
+    # Edge-cases modal: shown on edge click, lists every test-set case crossing that edge.
+    html.Div(
+        id='edge-modal-backdrop',
+        children=[
+            html.Div([
+                html.Div([
+                    html.H4(id='edge-modal-title', children='', style={'margin': 0, 'flex': '1'}),
+                    html.Button(
+                        '×', id='edge-modal-close', n_clicks=0,
+                        style={
+                            'background': 'none', 'border': 'none',
+                            'fontSize': '24px', 'lineHeight': '24px',
+                            'cursor': 'pointer', 'color': '#666',
+                            'padding': '0 4px',
+                        },
+                    ),
+                ], style={
+                    'display': 'flex', 'alignItems': 'center',
+                    'borderBottom': '1px solid #ddd', 'padding': '12px 16px',
+                }),
+                html.Div(id='edge-modal-body', style={
+                    'padding': '12px 16px', 'maxHeight': '70vh', 'overflowY': 'auto',
+                }),
+            ], style={
+                'backgroundColor': 'white', 'borderRadius': '8px',
+                'maxWidth': '600px', 'width': '90%',
+                'boxShadow': '0 4px 24px rgba(0,0,0,0.2)',
+            }),
+        ],
+        style=MODAL_HIDDEN,
     ),
 
 ], style={'fontFamily': 'Arial, sans-serif', 'fontSize': '13px'})
@@ -666,8 +723,9 @@ def on_analyze(n_clicks, pathway, case_value, model_name):
 
     pathway_tuple = tuple(pathway)
 
-    # Build context (baseline prediction)
-    context = analyzer.build_pathway_context(dfg_result, pathway_tuple, case_index, model)
+    # Build context (baseline prediction). Uses the polymorphic predictor so both
+    # U-ED-LSTM and Camargo models work without branching here.
+    context = analyzer.build_pathway_context(dfg_result, pathway_tuple, case_index, predictor)
 
     # Run feature sweep
     sweep_config = analyzer.get_sweepable_features(config.case_level_cat)
@@ -783,6 +841,67 @@ def on_analyze(n_clicks, pathway, case_value, model_name):
         ], style={'padding': '0 20px'}))
 
     return html.Div(children)
+
+
+@callback(
+    Output('edge-modal-backdrop', 'style'),
+    Output('edge-modal-title', 'children'),
+    Output('edge-modal-body', 'children'),
+    Input('dfg-graph', 'tapEdgeData'),
+    State('model-store', 'data'),
+    prevent_initial_call=True,
+)
+def on_edge_tap(edge_data, model_name):
+    """Show a modal listing every test-set case that traverses the clicked edge."""
+    if edge_data is None or not model_name:
+        return no_update, no_update, no_update
+
+    src = edge_data['source']
+    tgt = edge_data['target']
+
+    # Synthetic START edges aren't real DFG edges — skip.
+    if src == START_NODE_ID or tgt == START_NODE_ID:
+        return no_update, no_update, no_update
+
+    entry = _load_model_cache(model_name)
+    cases = entry['dfg_result'].edge_cases.get((src, tgt), [])
+
+    if not cases:
+        return MODAL_VISIBLE, f'{src} → {tgt}', html.Div(
+            'No cases recorded for this edge.',
+            style={'color': '#999', 'fontStyle': 'italic'},
+        )
+
+    rows = []
+    for ds_idx, trace_len in cases:
+        case_id = entry['dataset'][ds_idx][2]
+        rows.append({'case_id': str(case_id), 'trace_len': trace_len})
+
+    body = dash_table.DataTable(
+        data=rows,
+        columns=[
+            {'name': 'Case ID', 'id': 'case_id'},
+            {'name': 'Trace length', 'id': 'trace_len'},
+        ],
+        sort_action='native',
+        filter_action='native',
+        page_size=20,
+        export_format='csv',
+        style_table={'overflowX': 'auto'},
+        style_cell={'fontSize': '12px', 'padding': '6px 10px', 'textAlign': 'left'},
+        style_header={'fontWeight': 'bold', 'backgroundColor': '#f0f0f0'},
+    )
+    title = f'{src} → {tgt}  ({len(cases)} cases)'
+    return MODAL_VISIBLE, title, body
+
+
+@callback(
+    Output('edge-modal-backdrop', 'style', allow_duplicate=True),
+    Input('edge-modal-close', 'n_clicks'),
+    prevent_initial_call=True,
+)
+def on_edge_modal_close(n_clicks):
+    return MODAL_HIDDEN
 
 
 # ============================================================

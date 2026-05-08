@@ -101,19 +101,8 @@ HELPDESK_SHAREDCAT_ROLES = DatasetSpec(
 
 
 # Paper-faithful variant: per-time-step n-gram loader (Camargo §3.1), ngram_size=5 per Table 3.
-HELPDESK_SHAREDCAT_ROLES_NGRAM = DatasetSpec(
-    name="Helpdesk",
-    test_pickle="encoded_data/compare_camargo/helpdesk_all_5_roles_test.pkl",
-    model_pickle=(
-        "src/reimplemented_comparable_approaches/camargo_LSTM_suffix_pred/"
-        "notebooks/training/Helpdesk/Helpdesk_camargo_sharedcat_roles_ngram5.pkl"
-    ),
-    cat_indices=(0, 1),
-    num_indices=(0,),
-    activity_feature="Activity",
-    model_class="SharedCat_LSTM",
-    ngram_size=5,
-)
+# Built from src/interpretability/config/helpdesk_config.py — see end of file.
+HELPDESK_SHAREDCAT_ROLES_NGRAM = None  # populated below from config
 
 
 BPIC17 = DatasetSpec(
@@ -131,18 +120,74 @@ BPIC17 = DatasetSpec(
 
 # Paper-faithful variant: per-time-step n-gram loader. ngram_size=15 chosen by
 # analogy with BPI 2012 in Camargo Table 3 (similar complexity; no BPIC17 row).
-BPIC17_NGRAM = DatasetSpec(
-    name="BPIC17 (n-gram=15)",
-    test_pickle="encoded_data/BPIC_2017_all_5_test.pkl",
-    model_pickle=(
-        "src/reimplemented_comparable_approaches/camargo_LSTM_suffix_pred/"
-        "notebooks/training/BPIC17/BPIC17_camargo_ngram15.pkl"
-    ),
-    cat_indices=(0, 2),
-    num_indices=(0,),
-    activity_feature="concept:name",
-    ngram_size=15,
-)
+# Built from src/interpretability/config/bpic17_config.py — see end of file.
+BPIC17_NGRAM = None  # populated below from config
+
+
+def spec_from_config(config) -> DatasetSpec:
+    """Build a DatasetSpec from one of the per-dataset configs in
+    `src/interpretability/config/`.
+
+    Reads the camargo_* fields populated in each `<dataset>_config.py` and
+    honors ``config.use_improved``: when set, fields with a populated
+    ``_improved`` sibling are read from there. Raises ``ValueError`` if a
+    required field is missing so the caller knows exactly which config to
+    update.
+    """
+    model_pickle, used_imp_model = config._resolve_camargo_field('model_pickle', required=True)
+    test_pickle, used_imp_test = config._resolve_camargo_field('test_pickle', required=True)
+    cat_indices, _ = config._resolve_camargo_field('cat_indices', required=True)
+    num_indices, _ = config._resolve_camargo_field('num_indices', required=True)
+    model_class, _ = config._resolve_camargo_field('model_class')
+    ngram_size, _ = config._resolve_camargo_field('ngram_size')
+    if config.camargo_activity_feature is None:
+        raise ValueError(
+            f"Camargo activity_feature missing for dataset '{config.dataset_name}'."
+        )
+
+    name = config.camargo_display_name or config.dataset_name
+    if config.use_improved and (used_imp_model or used_imp_test):
+        name = f"{name} (improved)"
+
+    return DatasetSpec(
+        name=name,
+        test_pickle=test_pickle,
+        model_pickle=model_pickle,
+        cat_indices=tuple(cat_indices),
+        num_indices=tuple(num_indices),
+        activity_feature=config.camargo_activity_feature,
+        model_class=model_class or "FullShared_Join_LSTM",
+        ngram_size=int(ngram_size or 0),
+    )
+
+
+# Module-level Sepsis / DomesticDeclarations / BPIC17 / Helpdesk specs are
+# resolved lazily through `__getattr__` (see bottom of file) so flipping
+# `CONFIG.use_improved` in a notebook is reflected on the next attribute
+# access — no `importlib.reload` required.
+def _spec_from_dataset_config(module_name: str, attr: str = "CONFIG") -> DatasetSpec:
+    """Import `src.interpretability.config.<module_name>` and build a spec."""
+    import importlib
+    mod = importlib.import_module(f"src.interpretability.config.{module_name}")
+    return spec_from_config(getattr(mod, attr))
+
+
+# Lazy spec lookup. Notebooks access `utils.SEPSIS` etc. as before; each access
+# rebuilds the DatasetSpec from the live CONFIG, so toggling
+# `CONFIG.use_improved = True` flips the resolved paths without reload.
+_LAZY_SPEC_MODULES = {
+    "SEPSIS": "sepsis_config",
+    "DOMESTIC_DECLARATIONS": "domestic_declarations_config",
+    "BPIC17_NGRAM": "bpic17_config",
+    "HELPDESK_SHAREDCAT_ROLES_NGRAM": "helpdesk_config",
+}
+
+
+def __getattr__(name: str):  # pep 562
+    module = _LAZY_SPEC_MODULES.get(name)
+    if module is None:
+        raise AttributeError(name)
+    return _spec_from_dataset_config(module)
 
 
 def load_camargo_model(project_root: Path, spec: DatasetSpec):
@@ -310,7 +355,12 @@ def collect_prefix_predictions(predictor: CamargoPredictor,
             pred_idx, probs = predictor.predict_batch(cats_win, nums_win)
             pred_idx = int(pred_idx.item())
             current_activity = idx_to_name.get(acts_list[start + prefix_length - 1])
-            actual_next_idx = acts_list[start + prefix_length]
+            # End step (only yielded when include_end=True) means the next event
+            # is the case's EOS, even when the tensor lacks a trailing EOS slot.
+            if prefix_length < useful_len:
+                actual_next_idx = acts_list[start + prefix_length]
+            else:
+                actual_next_idx = eos_idx
             actual_next_activity = idx_to_name.get(actual_next_idx)
             predicted_next_activity = idx_to_name.get(pred_idx, f"<{pred_idx}>")
             records.append({

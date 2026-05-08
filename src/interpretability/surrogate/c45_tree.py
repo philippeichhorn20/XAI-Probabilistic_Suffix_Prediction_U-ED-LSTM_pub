@@ -265,44 +265,82 @@ class C45Classifier:
 
         return best
 
+    OTHER_BRANCH_LABEL = '<other>'
+
     def _categorical_split(
         self, feat_name: str, codes: np.ndarray, y_codes: np.ndarray,
         indices: np.ndarray, parent_entropy: float,
     ) -> Optional[Tuple]:
-        """Multi-way split on a pre-encoded categorical feature."""
-        n_cats = len(self._cat_decodings[feat_name])
+        """Multi-way split on a pre-encoded categorical feature.
+
+        Categories with fewer than ``min_samples_leaf`` samples are merged
+        into a single synthetic ``<other>`` branch instead of vetoing the
+        whole feature. The ``<other>`` branch is added only if the merged
+        rare-bucket itself clears ``min_samples_leaf``; otherwise rare
+        categories are dropped from the split. The split is rejected only
+        when fewer than 2 effective branches remain — so a categorical
+        feature can still drive a meaningful split as long as at least two
+        of its values (or one value plus a non-trivial ``<other>`` bucket)
+        carry enough samples.
+        """
         n_total = len(y_codes)
         n_classes = len(self._y_uniques)
 
-        # Use bincount per category for fast computation
         unique_codes = np.unique(codes)
         if len(unique_codes) <= 1:
+            return None
+
+        decoding = self._cat_decodings[feat_name]
+
+        # Partition into kept (>= min_samples_leaf) and rare (< min_samples_leaf).
+        kept = []           # list of (cat_code, mask, count)
+        rare = []           # list of (cat_code, mask, count)
+        for cat_code in unique_codes:
+            mask = codes == cat_code
+            cnt = int(mask.sum())
+            if cnt >= self.min_samples_leaf:
+                kept.append((cat_code, mask, cnt))
+            else:
+                rare.append((cat_code, mask, cnt))
+
+        # Build branches.
+        branches = []                # list of (label, mask, count)
+        category_map: Dict[Any, int] = {}
+
+        for cat_code, mask, cnt in kept:
+            cat_val = decoding[cat_code]
+            category_map[cat_val] = len(branches)
+            branches.append((cat_val, mask, cnt))
+
+        if rare:
+            rare_mask = np.zeros_like(codes, dtype=bool)
+            rare_count = 0
+            for _, mask, cnt in rare:
+                rare_mask |= mask
+                rare_count += cnt
+            if rare_count >= self.min_samples_leaf:
+                other_idx = len(branches)
+                branches.append((self.OTHER_BRANCH_LABEL, rare_mask, rare_count))
+                for cat_code, _, _ in rare:
+                    category_map[decoding[cat_code]] = other_idx
+            # else: rare categories silently dropped from the split.
+
+        if len(branches) < 2:
             return None
 
         weighted_child_entropy = 0.0
         split_info = 0.0
         child_indices_list = []
         branch_labels = []
-        category_map = {}
-        decoding = self._cat_decodings[feat_name]
 
-        for branch_idx, cat_code in enumerate(unique_codes):
-            mask = codes == cat_code
-            local_count = mask.sum()
-
-            if local_count < self.min_samples_leaf:
-                return None
-
+        for label, mask, cnt in branches:
             child_y = y_codes[mask]
-            weight = local_count / n_total
+            weight = cnt / n_total
             weighted_child_entropy += weight * self._fast_entropy(child_y, n_classes)
             if weight > 0:
                 split_info -= weight * np.log2(weight)
-
             child_indices_list.append(indices[mask])
-            cat_val = decoding[cat_code]
-            branch_labels.append(cat_val)
-            category_map[cat_val] = branch_idx
+            branch_labels.append(label)
 
         if split_info == 0:
             return None

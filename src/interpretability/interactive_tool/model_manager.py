@@ -33,21 +33,41 @@ class ModelManager:
         self._loaded_eval_helpers: Dict[str, Any] = {}
 
     def load_model(self, model_name: str):
-        """Load a model by name."""
+        """Load a model by name. Dispatches on `config.model_class`."""
         if model_name in self._loaded_models:
             return self._loaded_models[model_name]
 
         config = get_model_config(model_name)
         model_path = config.get_model_path(self.project_root)
+        cls = getattr(config, "model_class", "henryk_uedlstm")
 
-        # Import here to avoid circular imports
-        from src.model.dropout_uncertainty_enc_dec_LSTM.dropout_uncertainty_model import (
-            DropoutUncertaintyEncoderDecoderLSTM
-        )
+        if cls == "henryk_uedlstm":
+            from src.model.dropout_uncertainty_enc_dec_LSTM.dropout_uncertainty_model import (
+                DropoutUncertaintyEncoderDecoderLSTM
+            )
+            model = DropoutUncertaintyEncoderDecoderLSTM.load(str(model_path), dropout=0.0)
+        elif cls == "camargo_join":
+            # Camargo's `joinLSTM` package lives under reimplemented_comparable_approaches.
+            import sys as _sys
+            from pathlib import Path as _P
+            _camargo_pkg = (self.project_root /
+                            "src/reimplemented_comparable_approaches/camargo_LSTM_suffix_pred")
+            if str(_camargo_pkg) not in _sys.path:
+                _sys.path.insert(0, str(_camargo_pkg))
+            from joinLSTM.model import FullShared_Join_LSTM  # type: ignore
+            model = FullShared_Join_LSTM.load(str(model_path))
+        elif cls == "camargo_sharedcat":
+            import sys as _sys
+            _camargo_pkg = (self.project_root /
+                            "src/reimplemented_comparable_approaches/camargo_LSTM_suffix_pred")
+            if str(_camargo_pkg) not in _sys.path:
+                _sys.path.insert(0, str(_camargo_pkg))
+            from sharedCatLSTM.model import SharedCat_LSTM  # type: ignore
+            model = SharedCat_LSTM.load(str(model_path))
+        else:
+            raise ValueError(f"Unknown model_class '{cls}' for model '{model_name}'")
 
-        model = DropoutUncertaintyEncoderDecoderLSTM.load(str(model_path), dropout=0.0)
         model.eval()
-
         self._loaded_models[model_name] = model
         return model
 

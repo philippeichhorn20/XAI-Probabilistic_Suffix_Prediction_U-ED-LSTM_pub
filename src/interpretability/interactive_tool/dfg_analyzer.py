@@ -28,6 +28,7 @@ class DFGResult:
     successors_map: Dict[str, Dict[str, int]]                # activity -> {successor -> count}
     decision_points: Dict[str, Dict[str, int]]               # activities with >1 successor
     pathway_index: Dict[Tuple[str, ...], List[Tuple[int, int]]]  # pathway -> [(ds_idx, trace_len)]
+    edge_cases: Dict[Tuple[str, str], List[Tuple[int, int]]]     # edge -> unique [(ds_idx, trace_len)]
     activity_names: List[str]                                 # idx -> name
     eos_idx: int
     seq_len: int
@@ -189,6 +190,7 @@ class DFGAnalyzer:
         # Build DFG and pathway index
         dfg = {}
         pathway_index = {}
+        edge_cases_set = {}  # edge -> set of (ds_idx, trace_len) — dedupes per case
 
         for case_id, (ds_idx, trace_len) in cases.items():
             cat_t = dataset[ds_idx][0]
@@ -205,15 +207,19 @@ class DFGAnalyzer:
 
             act_names = [activity_names[acts[j].item()] for j in range(useful_len)]
 
-            # Record DFG edges
+            # Record DFG edges + which cases traverse each edge.
             for k in range(len(act_names) - 1):
                 edge = (act_names[k], act_names[k + 1])
                 dfg[edge] = dfg.get(edge, 0) + 1
+                edge_cases_set.setdefault(edge, set()).add((ds_idx, trace_len))
 
             # Record all prefix pathways
             for k in range(1, len(act_names) + 1):
                 pathway = tuple(act_names[:k])
                 pathway_index.setdefault(pathway, []).append((ds_idx, trace_len))
+
+        # Sort each edge's case list deterministically.
+        edge_cases = {e: sorted(s) for e, s in edge_cases_set.items()}
 
         # Build successor map and decision points
         successors_map = {}
@@ -230,6 +236,7 @@ class DFGAnalyzer:
             successors_map=successors_map,
             decision_points=decision_points,
             pathway_index=pathway_index,
+            edge_cases=edge_cases,
             activity_names=self.activity_names,
             eos_idx=self.eos_idx,
             seq_len=self.seq_len,
@@ -277,9 +284,14 @@ class DFGAnalyzer:
         dfg_result: DFGResult,
         pathway: Tuple[str, ...],
         case_index: int,
-        model: torch.nn.Module,
+        predictor,
     ) -> PathwayContext:
-        """Build prefix tensor for a pathway + case, run baseline prediction."""
+        """Build prefix tensor for a pathway + case, run baseline prediction.
+
+        `predictor` must expose ``predict_batch(cat_batch, num_stacked, batch_size=...)``
+        — both RevisedPlusModelPredictor and CamargoModelPredictor satisfy this
+        so dispatch is handled at the call site upstream.
+        """
         dataset = self.dataset
         seq_len = self.seq_len
         activity_names = self.activity_names
@@ -307,19 +319,20 @@ class DFGAnalyzer:
             num_tuple.append(t)
         num_tuple = tuple(num_tuple)
 
-        # Run model prediction
-        cat_in = [c.unsqueeze(0) for c in cat_tuple]
-        num_in = [n.unsqueeze(0) for n in num_tuple]
-        with torch.no_grad():
-            preds = model((cat_in, num_in))[0]
-            logits = preds[0][f'{self.activity_feature}_mean'][0]
-            p = torch.softmax(logits, dim=-1).squeeze(0)
-            top_p, top_idx = p.max(dim=-1)
-
-        original_pred_idx = top_idx.item()
+        # Baseline prediction via the polymorphic predictor (handles both U-ED-LSTM
+        # and Camargo forward signatures + windowing).
+        cat_batch = [c.unsqueeze(0) for c in cat_tuple]
+        if num_tuple:
+            num_stacked = torch.stack(
+                [n.float() for n in num_tuple], dim=-1
+            ).unsqueeze(0)  # [1, seq_len, n_num]
+        else:
+            num_stacked = torch.zeros((1, seq_len, 0))
+        preds_arr, probs_arr = predictor.predict_batch(cat_batch, num_stacked, batch_size=1)
+        original_pred_idx = int(preds_arr[0])
         original_pred_name = activity_names[original_pred_idx]
-        original_pred_prob = top_p.item()
-        original_probs = p.numpy()
+        original_pred_prob = float(probs_arr[0, original_pred_idx])
+        original_probs = probs_arr[0]
 
         # Decode prefix and suffix from the original full trace (avoids
         # showing "<pad>" for non-activity features that legitimately have
