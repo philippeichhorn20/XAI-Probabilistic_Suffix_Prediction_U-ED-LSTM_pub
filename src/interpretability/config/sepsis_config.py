@@ -25,7 +25,11 @@ CONFIG = BaseConfig(
     model_path_old="src/interpretability/improved_pipeline/henryk/sepsis/old/Training/Sepsis_full_grad_norm_new_4layer.pkl",
 
     # Class-weighted CE + lower teacher forcing retrain (see improved/Training notebook).
-    model_path_improved= "src/interpretability/improved_pipeline/henryk/sepsis/improved/Training/Sepsis_full_grad_norm_new_4layer_weighted_ce.pkl", #"src/interpretability/improved_pipeline/henryk/sepsis/improved/Training/Sepsis_full_grad_norm_new_4layer_weighted_ce.pkl",
+    #model_path_improved= "src/interpretability/improved_pipeline/henryk/sepsis/improved/Training/Sepsis_full_grad_norm_new_4layer_weighted_ce.pkl", 
+    # only hyperparam changes architectual improvements: 
+    model_path_improved="src/interpretability/improved_pipeline/henryk/sepsis/improved/Training/Sepsis_full_grad_norm_new_4layer_0point2_featuremasking.pkl", 
+    #model_path_improved="src/interpretability/improved_pipeline/henryk/sepsis/improved/Training/Sepsis_full_grad_norm_new_4layer_hyperparam_tuning_20260508.pkl", 
+
 
 
     test_data_path_old="encoded_data/Sepsis_all_5_test.pkl",

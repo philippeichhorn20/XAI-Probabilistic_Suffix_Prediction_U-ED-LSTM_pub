@@ -101,8 +101,7 @@ HELPDESK_SHAREDCAT_ROLES = DatasetSpec(
 
 
 # Paper-faithful variant: per-time-step n-gram loader (Camargo §3.1), ngram_size=5 per Table 3.
-# Built from src/interpretability/config/helpdesk_config.py — see end of file.
-HELPDESK_SHAREDCAT_ROLES_NGRAM = None  # populated below from config
+# Resolved lazily via __getattr__ from src/interpretability/config/helpdesk_config.py.
 
 
 BPIC17 = DatasetSpec(
@@ -120,8 +119,7 @@ BPIC17 = DatasetSpec(
 
 # Paper-faithful variant: per-time-step n-gram loader. ngram_size=15 chosen by
 # analogy with BPI 2012 in Camargo Table 3 (similar complexity; no BPIC17 row).
-# Built from src/interpretability/config/bpic17_config.py — see end of file.
-BPIC17_NGRAM = None  # populated below from config
+# Resolved lazily via __getattr__ from src/interpretability/config/bpic17_config.py.
 
 
 def spec_from_config(config) -> DatasetSpec:

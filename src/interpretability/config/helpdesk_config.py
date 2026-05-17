@@ -19,6 +19,7 @@ CONFIG = BaseConfig(
     growing_num_values=["case_elapsed_time"],
 
     # Paths (relative to project root)
+
     model_path_old="src/interpretability/improved_pipeline/henryk/helpdesk/old/Training/Helpdesk_full_grad_norm_philipp_4layer_philipp_final_run.pkl",
     model_path_improved="src/interpretability/improved_pipeline/henryk/helpdesk/improved/Training/pkl/Helpdesk_full_grad_norm_improved_henryk-p1oversampling.pkl", #"src/interpretability/improved_pipeline/henryk/helpdesk/improved/Training/pkl/-.pkl",
 

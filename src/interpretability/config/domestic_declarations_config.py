@@ -17,7 +17,7 @@ CONFIG = BaseConfig(
     growing_num_values=["case_elapsed_time"],
 
     # Paths (relative to project root)
-    model_path_old="src/interpretability/improved_pipeline/camargo/domestic_declarations/old/Training/pkl/DomesticDeclarations_camargo_sharedcat_role_ngram5.pkl",
+    model_path_old="src/interpretability/improved_pipeline/henryk/domestic_declarations/old/Training/DomesticDeclarations_full_grad_norm_4layer_philipp_unchanged_1105.pkl",
     model_path_improved=None,
 
     test_data_path_old="encoded_data/test_philipp/domestic_declarations_all_5_test.pkl",
@@ -35,7 +35,7 @@ CONFIG = BaseConfig(
     # --- Camargo baseline (under src/interpretability/improved_pipeline/camargo/) ---
     camargo_model_pickle=(
         "src/interpretability/improved_pipeline/camargo/domestic_declarations/old/Training/pkl/"
-        "DomesticDeclarations_camargo_sharedcat_role_ngram5.pkl"
+        "DomesticDeclarations_camargo_sharedcat_role_ngram5_0515.pkl"
     ),
     camargo_test_pickle=(
         "src/interpretability/improved_pipeline/camargo/domestic_declarations/old/Loader/pkl/"
@@ -48,3 +48,4 @@ CONFIG = BaseConfig(
     camargo_ngram_size=5,
     camargo_display_name="DomesticDeclarations",
 )
+

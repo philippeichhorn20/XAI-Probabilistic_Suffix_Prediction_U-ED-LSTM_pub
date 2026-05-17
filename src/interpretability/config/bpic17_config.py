@@ -17,7 +17,7 @@ CONFIG = BaseConfig(
 
     # Paths (relative to project root)
     model_path_old="src/interpretability/improved_pipeline/henryk/bpic17/old/Training/BPIC_2017_remote_run_20260425_145308_epoch100.pkl",
-    model_path_improved="src/interpretability/improved_pipeline/henryk/bpic17/improved/BPIC_2017_full_grad_norm_M_model_epoch81.pkl",
+    model_path_improved="src/interpretability/improved_pipeline/henryk/bpic17/improved/BPIC_2017_full_grad_norm_A1_A2_model.pkl",
 
     test_data_path_old="encoded_data/BPIC_2017_all_5_test.pkl",
     test_data_path_improved="src/interpretability/improved_pipeline/henryk/bpic17/improved/Loader/pkl/BPIC_2017_all_5_test.pkl",
